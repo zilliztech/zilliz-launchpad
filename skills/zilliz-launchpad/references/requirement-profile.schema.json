@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RequirementProfile",
+  "description": "Merged output of Phase 1 (Collect) and Phase 2 (Configure). Sole input to Phase 3 (Plan).",
+  "type": "object",
+  "required": ["collect", "configure"],
+  "additionalProperties": false,
+  "properties": {
+    "collect": {
+      "type": "object",
+      "required": ["data_shape", "fields", "suggested_primary_key", "suggested_text_field"],
+      "additionalProperties": false,
+      "properties": {
+        "source_path": { "type": ["string", "null"] },
+        "data_shape": { "enum": ["jsonl", "csv", "text"] },
+        "record_count_estimate": { "type": ["integer", "null"], "minimum": 0 },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "enum": ["string", "int", "float", "bool"] },
+              "avg_length": { "type": ["integer", "null"] },
+              "sample_value": {}
+            }
+          }
+        },
+        "suggested_primary_key": { "type": "string" },
+        "suggested_text_field": { "type": "string" }
+      }
+    },
+    "configure": {
+      "type": "object",
+      "required": ["use_case", "query_patterns", "dataset_size", "deployment_target"],
+      "additionalProperties": false,
+      "properties": {
+        "use_case": { "enum": ["rag", "semantic-search", "recommendations"] },
+        "query_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "short-keyword",
+              "long-natural-language",
+              "code",
+              "multilingual",
+              "structured-filter"
+            ]
+          }
+        },
+        "dataset_size": { "type": "integer", "minimum": 1 },
+        "deployment_target": {
+          "enum": [
+            "local-standalone",
+            "zilliz-serverless",
+            "zilliz-dedicated",
+            "zilliz-byoc"
+          ]
+        },
+        "latency_target_ms": { "type": ["integer", "null"], "minimum": 1 },
+        "embedding_preference": {
+          "type": ["object", "null"],
+          "required": ["provider"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "enum": ["openai", "voyage", "cohere", "zilliz-byom"] },
+            "model": { "type": ["string", "null"] },
+            "dim": { "type": ["integer", "null"] }
+          }
+        },
+        "hybrid_preference": {
+          "enum": ["auto", "dense", "sparse", "hybrid"],
+          "default": "auto"
+        },
+        "reranker_preference": {
+          "enum": ["auto", "none", "cohere", "bge"],
+          "default": "auto"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "zilliz-launchpad",
+  "version": "0.1.0",
+  "description": "Turn a sample document into a running Milvus / Zilliz Cloud search app in minutes. Four guided phases: Collect, Configure, Plan, Execute.",
+  "entry": "SKILL.md",
+  "author": "Zilliz",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/zilliztech/zilliz-launchpad",
+  "compatible_agents": ["claude-code"],
+  "tags": ["milvus", "zilliz-cloud", "vector-search", "rag", "hybrid-search"],
+  "runtime": {
+    "python": ">=3.11",
+    "requires": ["docker", "uv"]
+  },
+  "commands": {
+    "collect":  "python scripts/zilliz_ops.py collect",
+    "configure":"python scripts/zilliz_ops.py configure",
+    "plan":     "python scripts/zilliz_ops.py plan",
+    "execute":  "python scripts/zilliz_ops.py execute"
+  }
+}

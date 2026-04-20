@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.11"
+      - run: uv sync --all-extras --dev
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format check
+        run: uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy skills/zilliz-launchpad/scripts
+      - name: Unit tests
+        run: uv run pytest -m "not cloud and not e2e"
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skills/zilliz-launchpad/scripts/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci || npm install
+      - run: npm run lint --if-present
+      - run: npm run build
+      - name: Secret leak check
+        run: |
+          if grep -rE "OPENAI_API_KEY|ZILLIZ_TOKEN|COHERE_API_KEY|VOYAGE_API_KEY" .next/; then
+            echo "ERROR: secret-like strings found in UI bundle" >&2
+            exit 1
+          fi

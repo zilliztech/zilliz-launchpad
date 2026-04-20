@@ -1,1 +1,28 @@
-openspec/
+.plans/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Next.js
+node_modules/
+skills/zilliz-launchpad/scripts/ui/.next/
+skills/zilliz-launchpad/scripts/ui/out/
+skills/zilliz-launchpad/scripts/ui/node_modules/
+
+# Launchpad runtime artifacts
+skills/zilliz-launchpad/scripts/runs/*
+!skills/zilliz-launchpad/scripts/runs/.gitkeep
+
+# Milvus docker-compose data volumes
+skills/zilliz-launchpad/scripts/volumes/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
