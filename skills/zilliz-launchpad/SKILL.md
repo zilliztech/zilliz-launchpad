@@ -101,8 +101,8 @@ On success of Phase 4, start the demo UI:
 
 ```bash
 cd skills/zilliz-launchpad/scripts/ui
-npm install
-npm run dev
+pnpm install
+pnpm dev
 # open http://localhost:3000
 ```
 

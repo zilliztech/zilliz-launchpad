@@ -12,6 +12,7 @@
       "additionalProperties": false,
       "properties": {
         "source_path": { "type": ["string", "null"] },
+        "source_sample": { "type": ["string", "null"] },
         "data_shape": { "enum": ["jsonl", "csv", "text"] },
         "record_count_estimate": { "type": ["integer", "null"], "minimum": 0 },
         "fields": {

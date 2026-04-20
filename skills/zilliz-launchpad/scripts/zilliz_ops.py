@@ -135,7 +135,7 @@ def execute(
         raise typer.Exit(code=3)
     if report.get("sidecar_pid"):
         typer.echo(f"UI sidecar pid {report['sidecar_pid']} on port {report['ui_port']}")
-        typer.echo("Start the Next.js UI: (cd scripts/ui && npm run dev)")
+        typer.echo("Start the Next.js UI: (cd scripts/ui && pnpm install && pnpm dev)")
 
 
 if __name__ == "__main__":
