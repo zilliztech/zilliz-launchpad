@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pymilvus import CollectionSchema, DataType, FieldSchema, MilvusClient
+from pymilvus import CollectionSchema, DataType, FieldSchema, Function, FunctionType, MilvusClient
 
 from .errors import BackendUnsupportedError, SchemaConflictError
 
@@ -163,9 +163,12 @@ def build_basic_schema(
 
     `extra_fields` is a list of `(name, dtype, max_length_or_none)`.
     """
+    text_field_kwargs: dict[str, Any] = {"max_length": 65535}
+    if enable_sparse:
+        text_field_kwargs["enable_analyzer"] = True
     fields: list[FieldSchema] = [
         FieldSchema(name=primary_field, dtype=DataType.VARCHAR, is_primary=True, max_length=128),
-        FieldSchema(name=text_field, dtype=DataType.VARCHAR, max_length=65535),
+        FieldSchema(name=text_field, dtype=DataType.VARCHAR, **text_field_kwargs),
         FieldSchema(name=vector_field, dtype=DataType.FLOAT_VECTOR, dim=dim),
     ]
     if enable_sparse:
@@ -175,4 +178,14 @@ def build_basic_schema(
             fields.append(FieldSchema(name=name, dtype=dtype, max_length=max_length))
         else:
             fields.append(FieldSchema(name=name, dtype=dtype))
-    return CollectionSchema(fields=fields, description="zilliz-launchpad collection")
+    schema = CollectionSchema(fields=fields, description="zilliz-launchpad collection")
+    if enable_sparse:
+        schema.add_function(
+            Function(
+                name=f"{text_field}_bm25",
+                function_type=FunctionType.BM25,
+                input_field_names=[text_field],
+                output_field_names=[sparse_field],
+            )
+        )
+    return schema

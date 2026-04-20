@@ -22,6 +22,10 @@ skills/zilliz-launchpad/scripts/runs/*
 # Milvus docker-compose data volumes
 skills/zilliz-launchpad/scripts/volumes/
 
+# Local secrets
+.env
+.env.*
+
 # OS / editor
 .DS_Store
 .idea/

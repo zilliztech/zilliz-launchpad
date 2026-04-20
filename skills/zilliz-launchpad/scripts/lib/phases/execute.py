@@ -284,6 +284,15 @@ def run_execute(
         metric_type=plan["index"]["metric"],
         params=plan["index"]["params"],
     )
+    if plan.get("sparse_enabled"):
+        create_index(
+            client,
+            plan["collection_name"],
+            plan["schema"]["sparse_field"],
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="BM25",
+            params={},
+        )
     load_collection(client, plan["collection_name"])
 
     # Ingest
