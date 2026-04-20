@@ -8,18 +8,51 @@ on:
 jobs:
   python:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        zilliz_cli: ["absent", "present"]
+    env:
+      ZILLIZ_CLI_VERSION: "0.3.0"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: "3.11"
       - run: uv sync --all-extras --dev
+      - name: Install zilliz CLI
+        if: matrix.zilliz_cli == 'present'
+        uses: actions/cache@v4
+        id: cache-zilliz
+        with:
+          path: ~/.local/bin/zilliz
+          key: zilliz-cli-${{ env.ZILLIZ_CLI_VERSION }}
+      - name: Download zilliz CLI
+        if: matrix.zilliz_cli == 'present' && steps.cache-zilliz.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/zilliztech/zilliz-cli/releases/download/v${ZILLIZ_CLI_VERSION}/zilliz-linux-amd64" -o "$HOME/.local/bin/zilliz"
+          chmod +x "$HOME/.local/bin/zilliz"
+      - name: Expose zilliz on PATH
+        if: matrix.zilliz_cli == 'present'
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Lint
+        if: matrix.zilliz_cli == 'absent'
         run: uv run ruff check .
       - name: Format check
+        if: matrix.zilliz_cli == 'absent'
         run: uv run ruff format --check .
       - name: Type check
+        if: matrix.zilliz_cli == 'absent'
         run: uv run mypy skills/zilliz-launchpad/scripts
+      - name: SKILL.md line-length check
+        if: matrix.zilliz_cli == 'absent'
+        run: |
+          lines=$(wc -l < skills/zilliz-launchpad/SKILL.md)
+          if [ "$lines" -gt 500 ]; then
+            echo "ERROR: SKILL.md has $lines lines (>500)" >&2
+            exit 1
+          fi
       - name: Unit tests
         run: uv run pytest -m "not cloud and not e2e"
 

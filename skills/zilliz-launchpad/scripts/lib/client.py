@@ -50,7 +50,7 @@ def MilvusClient(uri: str, token: str | None = None, **kwargs: Any) -> _PyMilvus
     target = detect_target(uri)
     resolved = token
     if target.requires_token and resolved is None:
-        resolved = resolve("ZILLIZ_TOKEN", optional=True)
+        resolved = resolve("ZILLIZ_TOKEN", optional=True, allow_cli=True)
         if resolved is None:
             raise MissingCredentialError(env_var="ZILLIZ_TOKEN")
 

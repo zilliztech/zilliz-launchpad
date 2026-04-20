@@ -52,3 +52,24 @@ def test_end_to_end_movies(tmp_path: Path):
 def test_cloud_placeholder():
     """Cloud tests run only with ZILLIZ_TOKEN set; keep this out of default CI."""
     pytest.skip("Cloud tests opt-in only")
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(
+    os.environ.get("LAUNCHPAD_BULK_IMPORT_E2E") != "1",
+    reason="Set LAUNCHPAD_BULK_IMPORT_E2E=1 to exercise the CLI-backed bulk-import path",
+)
+def test_bulk_import_path_cli_present(tmp_path: Path):
+    """CLI-present bulk-import branch — requires a logged-in `zilliz` CLI
+    and a reachable cluster. Opt-in only."""
+    from lib import zilliz_cli
+    from lib.phases.execute import _should_bulk_import
+    from lib.client import Backend
+
+    assert zilliz_cli.is_available(), "zilliz CLI must be installed and logged in for this test"
+    assert _should_bulk_import(
+        row_count=200_000,
+        threshold=100_000,
+        target_backend=Backend.ZILLIZ_CLOUD,
+        cluster_id="c-test",
+    ) is True

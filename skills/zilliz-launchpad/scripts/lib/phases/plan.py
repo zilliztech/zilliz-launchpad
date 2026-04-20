@@ -11,6 +11,7 @@ from ..profile import load_profile
 
 DEFAULT_EMBEDDING = {"provider": "openai", "model": "text-embedding-3-small", "dim": 1536}
 CLOUD_TARGETS = {"zilliz-serverless", "zilliz-dedicated", "zilliz-byoc"}
+DEFAULT_BULK_IMPORT_THRESHOLD = 100_000
 
 
 @dataclass
@@ -33,6 +34,8 @@ class PlanSpec:
     reranker: str | None
     chunking: dict[str, int]
     deployment_target: str
+    bulk_import_threshold: int = DEFAULT_BULK_IMPORT_THRESHOLD
+    cluster_id: str | None = None
     rationale: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -122,7 +125,7 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
     index = _pick_index(configure["dataset_size"], configure["deployment_target"])
     reranker = _pick_reranker(configure.get("reranker_preference", "auto"), configure["use_case"])
     schema = _build_schema(collect, embedding, sparse)
-    target_uri = _target_uri(configure["deployment_target"])
+    target_uri = configure.get("target_uri") or _target_uri(configure["deployment_target"])
 
     rationale = [
         f"Dataset size {configure['dataset_size']} → index {index.type} {index.params}",
@@ -144,6 +147,8 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
         reranker=reranker,
         chunking={"size": 512, "overlap": 64},
         deployment_target=configure["deployment_target"],
+        bulk_import_threshold=DEFAULT_BULK_IMPORT_THRESHOLD,
+        cluster_id=configure.get("cluster_id"),
         rationale=rationale,
     )
 

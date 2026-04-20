@@ -37,6 +37,26 @@ cd ui && npm install && npm run dev
 # → http://localhost:3000
 ```
 
+### Going to Cloud
+
+Local Milvus Standalone needs no extra tooling. To run against Zilliz Cloud, install the optional [zilliz CLI](https://github.com/zilliztech/zilliz-cli) (≥ 0.3.0) — the launchpad uses it for cluster auto-discovery, pre-flight checks, and bulk import. Without the CLI the Cloud path still works; you just paste the URI + token manually.
+
+```bash
+# 1. Install + log in (one-time)
+zilliz auth login
+zilliz cluster list   # sanity check
+
+# 2. Configure for Cloud — the launchpad discovers your clusters automatically
+uv run python zilliz_ops.py configure --use-case rag --dataset-size 500000 --deployment zilliz-serverless
+
+# 3. Plan + Execute as usual — Phase 4 pre-flights the cluster and, for
+#    corpora above 100k rows, routes ingestion through `zilliz import create`.
+uv run python zilliz_ops.py plan
+uv run python zilliz_ops.py execute --input big.jsonl
+```
+
+Without the CLI, export `ZILLIZ_TOKEN` directly and Phase 4 falls back to client-side upsert.
+
 ## What you get
 
 - `skills/zilliz-launchpad/` — the Claude Code skill (SKILL.md + references + scripts)

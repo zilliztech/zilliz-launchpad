@@ -78,7 +78,10 @@
         "reranker_preference": {
           "enum": ["auto", "none", "cohere", "bge"],
           "default": "auto"
-        }
+        },
+        "cluster_id": { "type": ["string", "null"] },
+        "resolved_from_cli": { "type": "boolean", "default": false },
+        "target_uri": { "type": ["string", "null"] }
       }
     }
   }

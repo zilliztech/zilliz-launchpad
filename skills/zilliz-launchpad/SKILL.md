@@ -53,6 +53,18 @@ Resolve secrets from env **first**. Only if a variable is missing and needed by 
 
 When the CLI fails with `{"code":"missing_credential",...}`, the payload includes the variable name and an `export_hint`. Use that hint verbatim when asking the user.
 
+## Optional: `zilliz` CLI
+
+Install the [zilliz CLI](https://github.com/zilliztech/zilliz-cli) (≥ 0.3.0) to unlock three Cloud-only enhancements. The CLI is **never required** for local Milvus.
+
+| Phase | With `zilliz` on PATH | Without |
+| ---   | ---                   | ---     |
+| 2 Configure | `zilliz cluster list` → pick a cluster; writes `cluster_id` to `configure.json` | prompt for URI + token |
+| 4 Execute pre-flight | `zilliz cluster describe` gates on `RUNNING`; fails fast with `cluster_not_ready` | skipped |
+| 4 Execute bulk | `zilliz import create` for corpora above `bulk_import_threshold` (default 100k) | client-side upsert |
+| 2/4 Token fallback | `zilliz auth whoami` returns a scoped token when `ZILLIZ_TOKEN` is unset | `missing_credential` |
+| 6 Deploy (future) | `zilliz cluster create` will be wired here | n/a — Deploy requires the CLI |
+
 ## Reference lazy-loading
 
 Load only the references you need for the current phase. Do not prefetch all of `references/` — that wastes context.
@@ -111,6 +123,9 @@ Known codes and how to react:
 | `sparse_unavailable`  | the user picked hybrid/sparse but the collection was built without sparse; offer to rebuild |
 | `invalid_profile`     | Phase 3 got a malformed input; go back to Configure |
 | `backend_unsupported` | requested index (e.g. DiskANN) isn't available on the target; pick a fallback from `index_tuning.md` |
+| `zilliz_cli_missing`  | a Cloud-only feature needs `zilliz`; point at `install_url` in the payload |
+| `zilliz_cli_auth`     | CLI present but not logged in; tell the user to run `zilliz auth login` |
+| `cluster_not_ready`   | pre-flight found a non-RUNNING cluster; surface `state` + `remediation` verbatim |
 
 ## What this MVP does *not* do
 

@@ -84,6 +84,41 @@ class BackendUnsupportedError(LaunchpadError):
         )
 
 
+ZILLIZ_CLI_INSTALL_URL = "https://github.com/zilliztech/zilliz-cli#installation"
+
+
+class ZillizCliMissingError(LaunchpadError):
+    code = "zilliz_cli_missing"
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message or "zilliz CLI is required for this operation but was not found on PATH",
+            install_url=ZILLIZ_CLI_INSTALL_URL,
+        )
+
+
+class ZillizCliAuthError(LaunchpadError):
+    code = "zilliz_cli_auth"
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message or "zilliz CLI is installed but not authenticated",
+            remediation="zilliz auth login",
+        )
+
+
+class ClusterNotReadyError(LaunchpadError):
+    code = "cluster_not_ready"
+
+    def __init__(self, *, cluster_id: str, state: str, remediation: str) -> None:
+        super().__init__(
+            f"Cluster {cluster_id} is not ready (state={state})",
+            cluster_id=cluster_id,
+            state=state,
+            remediation=remediation,
+        )
+
+
 @dataclass
 class CliErrorEnvelope:
     """Uniform envelope emitted to stderr on failure."""

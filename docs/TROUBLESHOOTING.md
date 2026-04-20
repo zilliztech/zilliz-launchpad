@@ -47,6 +47,24 @@ You're trying to create a collection with a different schema than one that alrea
 
 You asked for sparse/hybrid search but the collection was built with `sparse_enabled=false`. Change `configure.hybrid_preference` to `"hybrid"` or `"sparse"`, re-plan, and re-execute (drop collection first).
 
+## `{"code": "zilliz_cli_missing", ...}`
+
+A Cloud-only feature (e.g. future Deploy) asked for the `zilliz` CLI and it isn't on `PATH`. Install from the URL in the `install_url` payload, then retry. Everything else — including the Cloud connection path — still works without the CLI, just without auto-discovery and bulk-import routing.
+
+## `{"code": "zilliz_cli_auth", ...}`
+
+The `zilliz` binary is installed but the session isn't authenticated. Run:
+
+```bash
+zilliz auth login
+```
+
+Then re-run the failing phase.
+
+## `{"code": "cluster_not_ready", "state": "PAUSED", ...}`
+
+Phase 4's pre-flight found the target cluster is not in `RUNNING` state. Use the exact `remediation` command from the error payload (typically `zilliz cluster resume --cluster-id <id>`). For `DELETING` / `FAILED` states, inspect the cluster at <https://cloud.zilliz.com> — the launchpad refuses to ingest into a cluster it can't reach.
+
 ## No sample selected / Phase 1 fails
 
 Run with `--sample movies` or `--sample beir-scifact-mini`, or pass `--input path/to/your.jsonl`.

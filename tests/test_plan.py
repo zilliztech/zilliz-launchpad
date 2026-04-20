@@ -108,3 +108,9 @@ def test_cloud_targets_produce_https_uri(deployment: str):
 def test_local_produces_http_uri():
     plan = plan_from_profile(_profile(dataset_size=100, deployment="local-standalone"))
     assert plan.target_uri.startswith("http://localhost:")
+
+
+def test_plan_emits_bulk_import_threshold_default():
+    plan = plan_from_profile(_profile(dataset_size=100, deployment="local-standalone"))
+    assert plan.bulk_import_threshold == 100_000
+    assert plan.to_dict()["bulk_import_threshold"] == 100_000
