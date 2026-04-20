@@ -34,7 +34,7 @@ class ConnectionTarget:
 
 def detect_target(uri: str) -> ConnectionTarget:
     host = (urlparse(uri).hostname or "").lower()
-    if host.endswith("zillizcloud.com"):
+    if host.endswith("cloud.zilliz.com"):
         return ConnectionTarget(uri=uri, backend=Backend.ZILLIZ_CLOUD, requires_token=True)
     return ConnectionTarget(uri=uri, backend=Backend.LOCAL, requires_token=False)
 

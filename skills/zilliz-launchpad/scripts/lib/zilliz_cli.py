@@ -122,8 +122,10 @@ def is_available() -> bool:
         _cached_available = False
         return False
 
-    whoami_result = _run(["auth", "whoami", "--output", "json"], allow_nonzero=True, log_output=False)
-    if whoami_result.returncode != 0:
+    auth_result = _run(["auth", "whoami", "--output", "json"], allow_nonzero=True, log_output=False)
+    if auth_result.returncode != 0:
+        auth_result = _run(["auth", "status"], allow_nonzero=True, log_output=False)
+    if auth_result.returncode != 0:
         _cached_available = False
         return False
 
