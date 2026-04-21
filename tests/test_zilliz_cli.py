@@ -43,8 +43,10 @@ def test_is_available_false_when_unauthed():
             return _completed(returncode=1, stderr="not logged in")
         return _completed(returncode=1)
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         assert zilliz_cli.is_available() is False
 
 
@@ -54,8 +56,10 @@ def test_is_available_false_when_version_stale():
             return _completed(stdout=json.dumps({"version": "0.1.0"}))
         return _completed()
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         assert zilliz_cli.is_available() is False
 
 
@@ -67,8 +71,10 @@ def test_is_available_true_when_authed_and_version_ok():
             return _completed(stdout=json.dumps({"token": "za_secret"}))
         return _completed(returncode=1)
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         assert zilliz_cli.is_available() is True
 
 
@@ -81,8 +87,10 @@ def test_is_available_caches_result():
             return _completed(stdout=json.dumps({"version": "0.3.0"}))
         return _completed(stdout=json.dumps({"token": "za_x"}))
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         assert zilliz_cli.is_available() is True
         first = calls["n"]
         assert zilliz_cli.is_available() is True
@@ -110,11 +118,13 @@ def test_auth_whoami_raises_auth_when_not_logged_in():
 
 
 def test_auth_whoami_returns_payload():
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch(
-             "lib.zilliz_cli.subprocess.run",
-             return_value=_completed(stdout=json.dumps({"token": "za_abc", "org": "o"})),
-         ):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch(
+            "lib.zilliz_cli.subprocess.run",
+            return_value=_completed(stdout=json.dumps({"token": "za_abc", "org": "o"})),
+        ),
+    ):
         data = zilliz_cli.auth_whoami()
     assert data == {"token": "za_abc", "org": "o"}
 
@@ -132,8 +142,10 @@ def test_cluster_list_invokes_correct_args():
             return _completed(stdout=json.dumps([{"clusterId": "c1"}, {"clusterId": "c2"}]))
         return _completed(returncode=1)
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         clusters = zilliz_cli.cluster_list()
     assert clusters == [{"clusterId": "c1"}, {"clusterId": "c2"}]
     assert ["zilliz", "cluster", "list", "--output", "json"] in calls
@@ -152,8 +164,10 @@ def test_cluster_describe_passes_cluster_id():
             return _completed(stdout=json.dumps({"state": "RUNNING"}))
         return _completed(returncode=1)
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         out = zilliz_cli.cluster_describe("c-xyz")
     assert out == {"state": "RUNNING"}
     assert "c-xyz" in captured["args"]
@@ -191,8 +205,10 @@ def test_import_create_builds_file_args():
             return _completed(stdout=json.dumps({"jobId": "j-1"}))
         return _completed(returncode=1)
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         out = zilliz_cli.import_create(
             cluster_id="c1", collection_name="col", files=["a.jsonl", "b.jsonl"]
         )
@@ -210,8 +226,10 @@ def test_import_describe_parses_state():
             return _completed(stdout=json.dumps({"state": "DONE"}))
         return _completed(returncode=1)
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
         assert zilliz_cli.import_describe("j1")["state"] == "DONE"
 
 
@@ -222,11 +240,13 @@ def test_cluster_create_stub_raises_not_implemented():
 
 def test_whoami_output_not_logged(caplog: Any):
     caplog.set_level("DEBUG")
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch(
-             "lib.zilliz_cli.subprocess.run",
-             return_value=_completed(stdout=json.dumps({"token": "za_SECRET_XYZ"})),
-         ):
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch(
+            "lib.zilliz_cli.subprocess.run",
+            return_value=_completed(stdout=json.dumps({"token": "za_SECRET_XYZ"})),
+        ),
+    ):
         zilliz_cli.auth_whoami()
     joined = " ".join(r.getMessage() for r in caplog.records)
     assert "za_SECRET_XYZ" not in joined

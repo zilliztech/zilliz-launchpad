@@ -13,9 +13,9 @@ SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
 @dataclass(frozen=True)
 class ChunkConfig:
-    size: int = 512            # approx tokens
-    overlap: int = 64          # approx tokens
-    chars_per_token: int = 4   # approximation
+    size: int = 512  # approx tokens
+    overlap: int = 64  # approx tokens
+    chars_per_token: int = 4  # approximation
 
     @property
     def size_chars(self) -> int:

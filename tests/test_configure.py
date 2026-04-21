@@ -34,10 +34,16 @@ def test_cloud_target_without_cli_falls_back_silently(tmp_path: Path):
 
 def test_cloud_target_with_cli_populates_cluster_id(tmp_path: Path):
     fake_clusters = [
-        {"clusterId": "c-serverless-1", "tier": "SERVERLESS", "connectAddress": "https://x.zillizcloud.com"}
+        {
+            "clusterId": "c-serverless-1",
+            "tier": "SERVERLESS",
+            "connectAddress": "https://x.zillizcloud.com",
+        }
     ]
-    with patch("lib.zilliz_cli.is_available", return_value=True), \
-         patch("lib.zilliz_cli.cluster_list", return_value=fake_clusters):
+    with (
+        patch("lib.zilliz_cli.is_available", return_value=True),
+        patch("lib.zilliz_cli.cluster_list", return_value=fake_clusters),
+    ):
         data = run_configure(
             from_json=None,
             out_dir=tmp_path,
@@ -49,8 +55,10 @@ def test_cloud_target_with_cli_populates_cluster_id(tmp_path: Path):
 
 
 def test_cloud_target_empty_list_falls_back(tmp_path: Path):
-    with patch("lib.zilliz_cli.is_available", return_value=True), \
-         patch("lib.zilliz_cli.cluster_list", return_value=[]):
+    with (
+        patch("lib.zilliz_cli.is_available", return_value=True),
+        patch("lib.zilliz_cli.cluster_list", return_value=[]),
+    ):
         data = run_configure(
             from_json=None,
             out_dir=tmp_path,

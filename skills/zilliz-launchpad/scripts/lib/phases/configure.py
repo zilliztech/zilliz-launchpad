@@ -83,9 +83,7 @@ def _discover_cluster(
     picked = _pick_cluster(clusters, target_tier, preferred_id)
     if picked is None:
         return None
-    cluster_id = str(
-        picked.get("clusterId") or picked.get("id") or picked.get("cluster_id") or ""
-    )
+    cluster_id = str(picked.get("clusterId") or picked.get("id") or picked.get("cluster_id") or "")
     uri = picked.get("connectAddress") or picked.get("uri") or picked.get("endpoint")
     if not cluster_id:
         return None

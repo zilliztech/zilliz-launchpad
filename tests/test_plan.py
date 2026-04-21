@@ -18,7 +18,8 @@ def _profile(
     return {
         "collect": {
             "data_shape": "jsonl",
-            "fields": fields or [
+            "fields": fields
+            or [
                 {"name": "id", "type": "string", "avg_length": 5, "sample_value": "x"},
                 {"name": "body", "type": "string", "avg_length": 500, "sample_value": "…"},
             ],
@@ -53,9 +54,7 @@ def test_medium_dataset_picks_hnsw_larger_m():
 
 
 def test_large_cloud_picks_diskann():
-    plan = plan_from_profile(
-        _profile(dataset_size=50_000_000, deployment="zilliz-serverless")
-    )
+    plan = plan_from_profile(_profile(dataset_size=50_000_000, deployment="zilliz-serverless"))
     assert plan.index.type == "DISKANN"
     assert plan.index.backend_compatibility == "Cloud-only"
 

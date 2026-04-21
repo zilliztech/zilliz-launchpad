@@ -67,9 +67,12 @@ def test_bulk_import_path_cli_present(tmp_path: Path):
     from lib.phases.execute import _should_bulk_import
 
     assert zilliz_cli.is_available(), "zilliz CLI must be installed and logged in for this test"
-    assert _should_bulk_import(
-        row_count=200_000,
-        threshold=100_000,
-        target_backend=Backend.ZILLIZ_CLOUD,
-        cluster_id="c-test",
-    ) is True
+    assert (
+        _should_bulk_import(
+            row_count=200_000,
+            threshold=100_000,
+            target_backend=Backend.ZILLIZ_CLOUD,
+            cluster_id="c-test",
+        )
+        is True
+    )

@@ -9,11 +9,13 @@ from pymilvus import CollectionSchema, DataType, FieldSchema
 
 
 def _schema(dim: int = 4) -> CollectionSchema:
-    return CollectionSchema(fields=[
-        FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=128),
-        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
-    ])
+    return CollectionSchema(
+        fields=[
+            FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=128),
+            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
+            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
+        ]
+    )
 
 
 def test_diff_identical_schemas_empty():

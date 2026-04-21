@@ -20,12 +20,32 @@ def collection_exists(client: MilvusClient, name: str) -> bool:
     return name in client.list_collections()
 
 
+def _dtype_name(v: Any) -> str:
+    """Normalize a pymilvus dtype (enum / int / 'DataType.X' / 'X') to its enum name."""
+    if isinstance(v, DataType):
+        return v.name
+    if isinstance(v, int):
+        try:
+            return DataType(v).name
+        except ValueError:
+            return str(v)
+    s = str(v)
+    if "." in s:
+        s = s.rsplit(".", 1)[-1]
+    if s.isdigit():
+        try:
+            return DataType(int(s)).name
+        except ValueError:
+            return s
+    return s
+
+
 def _schema_fingerprint(schema: CollectionSchema) -> list[tuple[str, str, dict[str, Any]]]:
     """Stable representation of a schema for comparison."""
     out: list[tuple[str, str, dict[str, Any]]] = []
     for f in schema.fields:
         params = dict(getattr(f, "params", {}) or {})
-        out.append((f.name, str(f.dtype), params))
+        out.append((f.name, _dtype_name(f.dtype), params))
     return sorted(out, key=lambda r: r[0])
 
 
@@ -35,9 +55,13 @@ def _diff_schemas(
 ) -> list[str]:
     """Return human-readable mismatch strings; empty list if compatible."""
     wanted = {
-        f.name: (str(f.dtype), dict(getattr(f, "params", {}) or {})) for f in requested.fields
+        f.name: (_dtype_name(f.dtype), dict(getattr(f, "params", {}) or {}))
+        for f in requested.fields
     }
-    have = {f["name"]: (str(f.get("type")), dict(f.get("params") or {})) for f in existing_fields}
+    have = {
+        f["name"]: (_dtype_name(f.get("type")), dict(f.get("params") or {}))
+        for f in existing_fields
+    }
 
     mismatches: list[str] = []
     for name, (wtype, wparams) in wanted.items():
@@ -45,7 +69,7 @@ def _diff_schemas(
             mismatches.append(f"missing field: {name}")
             continue
         htype, hparams = have[name]
-        if wtype.split(".")[-1] != htype.split(".")[-1]:
+        if wtype != htype:
             mismatches.append(f"field '{name}' type differs: have {htype}, want {wtype}")
         for key in ("dim", "max_length"):
             if key in wparams and wparams[key] != hparams.get(key):
@@ -85,9 +109,7 @@ def drop_collection(client: MilvusClient, name: str) -> None:
         client.drop_collection(collection_name=name)
 
 
-def describe_index(
-    client: MilvusClient, collection: str, field_name: str
-) -> dict[str, Any] | None:
+def describe_index(client: MilvusClient, collection: str, field_name: str) -> dict[str, Any] | None:
     for idx in client.list_indexes(collection_name=collection) or []:
         info = client.describe_index(collection_name=collection, index_name=idx)
         if info.get("field_name") == field_name:
