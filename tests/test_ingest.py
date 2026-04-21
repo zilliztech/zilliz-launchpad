@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from lib.chunking import ChunkConfig
 from lib.ingest import _deterministic_id, _is_retryable, ingest_documents
 
@@ -46,7 +45,9 @@ def test_ingest_idempotent_primary_keys(mocker):
     assert stats1.chunks == stats2.chunks
 
     # Same PKs on both invocations
-    all_rows: list[list[dict[str, Any]]] = [call.kwargs["data"] for call in client.upsert.call_args_list]
+    all_rows: list[list[dict[str, Any]]] = [
+        call.kwargs["data"] for call in client.upsert.call_args_list
+    ]
     ids_first = [r["id"] for r in all_rows[0]]
     ids_second = [r["id"] for r in all_rows[1]]
     assert ids_first == ids_second

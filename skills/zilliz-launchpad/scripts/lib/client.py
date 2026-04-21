@@ -10,7 +10,7 @@ and resolves a token from the environment when required.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from urllib.parse import urlparse
 
@@ -20,7 +20,7 @@ from .credentials import resolve
 from .errors import MissingCredentialError
 
 
-class Backend(str, Enum):
+class Backend(StrEnum):
     ZILLIZ_CLOUD = "zilliz-cloud"
     LOCAL = "local"
 

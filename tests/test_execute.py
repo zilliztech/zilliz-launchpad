@@ -63,8 +63,8 @@ def test_bulk_import_path_cli_present(tmp_path: Path):
     """CLI-present bulk-import branch — requires a logged-in `zilliz` CLI
     and a reachable cluster. Opt-in only."""
     from lib import zilliz_cli
-    from lib.phases.execute import _should_bulk_import
     from lib.client import Backend
+    from lib.phases.execute import _should_bulk_import
 
     assert zilliz_cli.is_available(), "zilliz CLI must be installed and logged in for this test"
     assert _should_bulk_import(

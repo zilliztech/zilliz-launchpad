@@ -51,7 +51,9 @@ def _analyze_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             avg_len = int(sum(lens) / len(lens)) if lens else 0
         fields.append({"name": k, "type": t, "avg_length": avg_len, "sample_value": values[0]})
 
-    pk_candidates = [f["name"] for f in fields if f["name"].lower() in ("id", "_id", "doc_id", "uid")]
+    pk_candidates = [
+        f["name"] for f in fields if f["name"].lower() in ("id", "_id", "doc_id", "uid")
+    ]
     pk = pk_candidates[0] if pk_candidates else fields[0]["name"]
 
     text_candidates = sorted(
@@ -121,7 +123,12 @@ def run_collect(
             result = {
                 "data_shape": "text",
                 "fields": [
-                    {"name": "text", "type": "string", "avg_length": len(text), "sample_value": text[:200]}
+                    {
+                        "name": "text",
+                        "type": "string",
+                        "avg_length": len(text),
+                        "sample_value": text[:200],
+                    }
                 ],
                 "suggested_primary_key": "id",
                 "suggested_text_field": "text",

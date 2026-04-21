@@ -22,7 +22,12 @@ from ..operations import build_basic_schema, create_collection, create_index, lo
 from ..samples import load as load_sample
 from ..search import search_dense
 
-DTYPE_MAP = {"string": (DataType.VARCHAR, 256), "int": (DataType.INT64, None), "float": (DataType.FLOAT, None), "bool": (DataType.BOOL, None)}
+DTYPE_MAP = {
+    "string": (DataType.VARCHAR, 256),
+    "int": (DataType.INT64, None),
+    "float": (DataType.FLOAT, None),
+    "bool": (DataType.BOOL, None),
+}
 
 READY_STATE = "RUNNING"
 WAIT_STATES = {"PROVISIONING", "MODIFYING"}
@@ -49,7 +54,9 @@ def _schema_from_plan(plan_schema: dict[str, Any]):
     )
 
 
-def _iter_documents(plan: dict[str, Any], run_dir: Path, sample: str | None, input_path: str | None):
+def _iter_documents(
+    plan: dict[str, Any], run_dir: Path, sample: str | None, input_path: str | None
+):
     if sample:
         yield from load_sample(sample)
         return
@@ -120,7 +127,11 @@ def _start_sidecar(run_dir: Path, plan: dict[str, Any], port: int) -> int | None
     env_file = run_dir / "sidecar.env.json"
     env_file.write_text(
         json.dumps(
-            {"uri": plan["target_uri"], "collection": plan["collection_name"], "plan_dir": str(run_dir)},
+            {
+                "uri": plan["target_uri"],
+                "collection": plan["collection_name"],
+                "plan_dir": str(run_dir),
+            },
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -237,8 +248,9 @@ def _bulk_import(
                 "state": state,
             }
         if state == "FAILED":
+            reason = status.get("reason") or status.get("failReason") or "unknown"
             raise LaunchpadError(
-                f"zilliz import job {job_id} failed: {status.get('reason') or status.get('failReason') or 'unknown'}",
+                f"zilliz import job {job_id} failed: {reason}",
                 job_id=job_id,
                 state=state,
             )

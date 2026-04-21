@@ -93,7 +93,9 @@ class ZillizBYOMEmbedder:
         return [d["embedding"] for d in resp.json()["data"]]
 
 
-def make_embedder(provider: str, model: str | None = None, dim: int | None = None) -> EmbeddingProvider:
+def make_embedder(
+    provider: str, model: str | None = None, dim: int | None = None
+) -> EmbeddingProvider:
     key = provider.lower()
     if key == "openai":
         return OpenAIEmbedder(

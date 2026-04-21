@@ -8,12 +8,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-
 from lib import zilliz_cli
 from lib.errors import LaunchpadError, ZillizCliAuthError, ZillizCliMissingError
 
 
-def _completed(stdout: str = "", stderr: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+def _completed(
+    stdout: str = "", stderr: str = "", returncode: int = 0
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["zilliz"],
         returncode=returncode,
@@ -89,16 +90,23 @@ def test_is_available_caches_result():
 
 
 def test_auth_whoami_raises_missing_when_binary_absent():
-    with patch("lib.zilliz_cli.shutil.which", return_value=None):
-        with pytest.raises(ZillizCliMissingError):
-            zilliz_cli.auth_whoami()
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value=None),
+        pytest.raises(ZillizCliMissingError),
+    ):
+        zilliz_cli.auth_whoami()
 
 
 def test_auth_whoami_raises_auth_when_not_logged_in():
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", return_value=_completed(returncode=1, stderr="no session")):
-        with pytest.raises(ZillizCliAuthError):
-            zilliz_cli.auth_whoami()
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch(
+            "lib.zilliz_cli.subprocess.run",
+            return_value=_completed(returncode=1, stderr="no session"),
+        ),
+        pytest.raises(ZillizCliAuthError),
+    ):
+        zilliz_cli.auth_whoami()
 
 
 def test_auth_whoami_returns_payload():
@@ -161,10 +169,12 @@ def test_nonzero_exit_raises_launchpad_error():
             return _completed(returncode=2, stderr="boom")
         return _completed(returncode=1)
 
-    with patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"), \
-         patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run):
-        with pytest.raises(LaunchpadError) as exc:
-            zilliz_cli.cluster_list()
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+        pytest.raises(LaunchpadError) as exc,
+    ):
+        zilliz_cli.cluster_list()
     assert "boom" in str(exc.value)
 
 

@@ -128,7 +128,7 @@ class CliErrorEnvelope:
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_error(cls, err: LaunchpadError) -> "CliErrorEnvelope":
+    def from_error(cls, err: LaunchpadError) -> CliErrorEnvelope:
         d = err.to_dict()
         code = d.pop("code")
         message = d.pop("message")

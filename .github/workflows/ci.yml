@@ -31,7 +31,7 @@ jobs:
         if: matrix.zilliz_cli == 'present' && steps.cache-zilliz.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL "https://github.com/zilliztech/zilliz-cli/releases/download/v${ZILLIZ_CLI_VERSION}/zilliz-linux-amd64" -o "$HOME/.local/bin/zilliz"
+          curl -fsSL "https://raw.githubusercontent.com/zilliztech/zilliz-cli/master/install.sh" -o "$HOME/.local/bin/zilliz"
           chmod +x "$HOME/.local/bin/zilliz"
       - name: Expose zilliz on PATH
         if: matrix.zilliz_cli == 'present'

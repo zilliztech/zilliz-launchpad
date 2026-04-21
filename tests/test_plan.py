@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from lib.phases.plan import plan_from_profile
 
 
@@ -68,7 +67,9 @@ def test_large_local_falls_back_to_hnsw_with_bigger_m():
 
 
 def test_rag_auto_enables_sparse():
-    plan = plan_from_profile(_profile(dataset_size=100, deployment="local-standalone", use_case="rag"))
+    plan = plan_from_profile(
+        _profile(dataset_size=100, deployment="local-standalone", use_case="rag")
+    )
     assert plan.sparse_enabled is True
 
 

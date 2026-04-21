@@ -49,7 +49,11 @@ def _pick_cluster(
             if str(c.get("clusterId") or c.get("id") or c.get("cluster_id")) == preferred_id:
                 return c
     if target_tier:
-        matches = [c for c in clusters if str(c.get("tier") or c.get("clusterType") or "").upper() == target_tier]
+        matches = [
+            c
+            for c in clusters
+            if str(c.get("tier") or c.get("clusterType") or "").upper() == target_tier
+        ]
         if matches:
             return matches[0]
     return clusters[0]

@@ -97,7 +97,9 @@ def _target_uri(deployment_target: str) -> str:
     return "https://<your-cluster>.api.gcp-us-west1.zillizcloud.com"
 
 
-def _build_schema(collect: dict[str, Any], embedding: dict[str, Any], sparse: bool) -> dict[str, Any]:
+def _build_schema(
+    collect: dict[str, Any], embedding: dict[str, Any], sparse: bool
+) -> dict[str, Any]:
     pk = collect["suggested_primary_key"]
     text = collect["suggested_text_field"]
     extra = [f for f in collect["fields"] if f["name"] not in (pk, text)]
@@ -108,7 +110,11 @@ def _build_schema(collect: dict[str, Any], embedding: dict[str, Any], sparse: bo
         "dim": embedding["dim"],
         "sparse_field": "sparse" if sparse else None,
         "extra_fields": [
-            {"name": f["name"], "type": f["type"], "max_length": 256 if f["type"] == "string" else None}
+            {
+                "name": f["name"],
+                "type": f["type"],
+                "max_length": 256 if f["type"] == "string" else None,
+            }
             for f in extra
         ],
     }
@@ -119,7 +125,9 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
     configure = profile["configure"]
     embedding = dict(DEFAULT_EMBEDDING)
     if configure.get("embedding_preference"):
-        embedding.update({k: v for k, v in configure["embedding_preference"].items() if v is not None})
+        embedding.update(
+            {k: v for k, v in configure["embedding_preference"].items() if v is not None}
+        )
 
     sparse = _pick_sparse(configure["use_case"], configure.get("hybrid_preference", "auto"))
     index = _pick_index(configure["dataset_size"], configure["deployment_target"])
@@ -132,7 +140,10 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
         f"Use case '{configure['use_case']}' + hybrid preference "
         f"'{configure.get('hybrid_preference', 'auto')}' → sparse={sparse}",
         f"Deployment '{configure['deployment_target']}' → URI {target_uri}",
-        f"Embedding provider '{embedding['provider']}' model '{embedding['model']}' (dim {embedding['dim']})",
+        (
+            f"Embedding provider '{embedding['provider']}' "
+            f"model '{embedding['model']}' (dim {embedding['dim']})"
+        ),
     ]
     if reranker:
         rationale.append(f"Reranker '{reranker}' enabled per preference")
@@ -165,7 +176,11 @@ def _plan_to_markdown(plan: PlanSpec) -> str:
         f"- Primary key: `{plan.schema['primary_key']}`",
         f"- Text field: `{plan.schema['text_field']}`",
         f"- Vector field: `{plan.schema['vector_field']}` (dim {plan.schema['dim']})",
-        f"- Sparse field: `{plan.schema['sparse_field']}`" if plan.sparse_enabled else "- Sparse: disabled",
+        (
+            f"- Sparse field: `{plan.schema['sparse_field']}`"
+            if plan.sparse_enabled
+            else "- Sparse: disabled"
+        ),
         f"- Extra fields: {', '.join(f['name'] for f in plan.schema['extra_fields']) or '(none)'}",
         "",
         "## Embedding",

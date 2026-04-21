@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from pymilvus import CollectionSchema, DataType, FieldSchema
-
 from lib.errors import SchemaConflictError
 from lib.operations import _diff_schemas, create_collection
+from pymilvus import CollectionSchema, DataType, FieldSchema
 
 
 def _schema(dim: int = 4) -> CollectionSchema:

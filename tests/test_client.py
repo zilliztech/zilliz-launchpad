@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from lib.client import Backend, detect_target
 from lib.errors import MissingCredentialError
 

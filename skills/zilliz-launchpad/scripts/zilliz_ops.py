@@ -18,10 +18,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
-
 from lib.errors import CliErrorEnvelope, LaunchpadError
 from lib.phases import collect as phase_collect
 from lib.phases import configure as phase_configure
@@ -40,9 +38,9 @@ def _fail(err: LaunchpadError) -> None:
 
 @app.command()
 def collect(
-    sample: Optional[str] = typer.Option(None, "--sample", "-s", help="Bundled sample name"),
-    input: Optional[Path] = typer.Option(None, "--input", "-i", help="Path to user data"),
-    run_dir: Optional[str] = typer.Option(None, "--run-dir", help="Existing run dir; default = new"),
+    sample: str | None = typer.Option(None, "--sample", "-s", help="Bundled sample name"),
+    input: Path | None = typer.Option(None, "--input", "-i", help="Path to user data"),  # noqa: B008
+    run_dir: str | None = typer.Option(None, "--run-dir", help="Existing run dir; default = new"),
 ) -> None:
     """Phase 1 — analyze sample data."""
     if sample is None and input is None:
@@ -65,14 +63,18 @@ def collect(
 
 @app.command()
 def configure(
-    from_json: Optional[Path] = typer.Option(None, "--from-json", help="Pre-filled answers"),
-    run_dir: Optional[str] = typer.Option(None, "--run-dir"),
-    use_case: Optional[str] = typer.Option(None, "--use-case"),
-    dataset_size: Optional[int] = typer.Option(None, "--dataset-size"),
-    deployment_target: Optional[str] = typer.Option(None, "--deployment"),
+    from_json: Path | None = typer.Option(None, "--from-json", help="Pre-filled answers"),  # noqa: B008
+    run_dir: str | None = typer.Option(None, "--run-dir"),
+    use_case: str | None = typer.Option(None, "--use-case"),
+    dataset_size: int | None = typer.Option(None, "--dataset-size"),
+    deployment_target: str | None = typer.Option(None, "--deployment"),
 ) -> None:
     """Phase 2 — capture requirements."""
-    out = resolve_run_dir(run_dir) if run_dir else (latest_run_dir() or new_run_dir(label="configure"))
+    out = (
+        resolve_run_dir(run_dir)
+        if run_dir
+        else (latest_run_dir() or new_run_dir(label="configure"))
+    )
     overrides = {
         "use_case": use_case,
         "dataset_size": dataset_size,
@@ -90,7 +92,7 @@ def configure(
 
 @app.command()
 def plan(
-    run_dir: Optional[str] = typer.Option(None, "--run-dir"),
+    run_dir: str | None = typer.Option(None, "--run-dir"),
 ) -> None:
     """Phase 3 — produce plan.{json,md}."""
     out = resolve_run_dir(run_dir)
@@ -105,9 +107,9 @@ def plan(
 
 @app.command()
 def execute(
-    run_dir: Optional[str] = typer.Option(None, "--run-dir"),
-    sample: Optional[str] = typer.Option(None, "--sample", "-s"),
-    input: Optional[Path] = typer.Option(None, "--input", "-i"),
+    run_dir: str | None = typer.Option(None, "--run-dir"),
+    sample: str | None = typer.Option(None, "--sample", "-s"),
+    input: Path | None = typer.Option(None, "--input", "-i"),  # noqa: B008
     ui_port: int = typer.Option(8000, "--ui-port"),
     no_ui: bool = typer.Option(False, "--no-ui", help="Skip starting the sidecar"),
 ) -> None:

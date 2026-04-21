@@ -30,7 +30,7 @@ def _hits_from_milvus(raw: Sequence[Any]) -> list[Hit]:
     out: list[Hit] = []
     for h in raw:
         # pymilvus 2.4+ hit objects expose `id`, `distance`/`score`, and `entity`
-        hid = str(getattr(h, "id", None) or h.get("id") if isinstance(h, dict) else getattr(h, "id"))
+        hid = str(getattr(h, "id", None) or h.get("id") if isinstance(h, dict) else h.id)
         score = float(
             getattr(h, "score", None)
             if getattr(h, "score", None) is not None

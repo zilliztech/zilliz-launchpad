@@ -6,7 +6,7 @@ lexicographically sortable, stable, and timezone-free.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _RUNS_ROOT = Path(__file__).resolve().parent.parent / "runs"
@@ -18,7 +18,7 @@ def runs_root() -> Path:
 
 
 def new_run_dir(label: str | None = None) -> Path:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     name = f"{ts}-{label}" if label else ts
     path = runs_root() / name
     path.mkdir(parents=True, exist_ok=False)
