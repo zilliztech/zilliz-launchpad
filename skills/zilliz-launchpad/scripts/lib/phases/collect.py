@@ -14,7 +14,7 @@ SUPPORTED_SUFFIXES = {".jsonl", ".ndjson", ".csv", ".txt"}
 
 
 def _infer_field_type(values: list[Any]) -> str:
-    types = Counter()
+    types: Counter[str] = Counter()
     for v in values:
         if v is None:
             continue
@@ -28,7 +28,7 @@ def _infer_field_type(values: list[Any]) -> str:
             types["string"] += 1
     if not types:
         return "string"
-    return types.most_common(1)[0][0]
+    return str(types.most_common(1)[0][0])
 
 
 def _analyze_records(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -52,7 +52,7 @@ def _analyze_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         fields.append({"name": k, "type": t, "avg_length": avg_len, "sample_value": values[0]})
 
     pk_candidates = [
-        f["name"] for f in fields if f["name"].lower() in ("id", "_id", "doc_id", "uid")
+        f["name"] for f in fields if str(f["name"]).lower() in ("id", "_id", "doc_id", "uid")
     ]
     pk = pk_candidates[0] if pk_candidates else fields[0]["name"]
 

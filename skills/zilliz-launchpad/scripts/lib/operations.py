@@ -13,7 +13,8 @@ from pymilvus import CollectionSchema, DataType, FieldSchema, Function, Function
 
 from .errors import BackendUnsupportedError, SchemaConflictError
 
-IndexType = Literal["FLAT", "IVF_FLAT", "HNSW", "DISKANN"]
+IndexType = Literal["FLAT", "IVF_FLAT", "HNSW", "DISKANN", "SPARSE_INVERTED_INDEX"]
+MetricType = Literal["L2", "IP", "COSINE", "BM25"]
 
 
 def collection_exists(client: MilvusClient, name: str) -> bool:
@@ -23,10 +24,10 @@ def collection_exists(client: MilvusClient, name: str) -> bool:
 def _dtype_name(v: Any) -> str:
     """Normalize a pymilvus dtype (enum / int / 'DataType.X' / 'X') to its enum name."""
     if isinstance(v, DataType):
-        return v.name
+        return str(v.name)
     if isinstance(v, int):
         try:
-            return DataType(v).name
+            return str(DataType(v).name)
         except ValueError:
             return str(v)
     s = str(v)
@@ -34,7 +35,7 @@ def _dtype_name(v: Any) -> str:
         s = s.rsplit(".", 1)[-1]
     if s.isdigit():
         try:
-            return DataType(int(s)).name
+            return str(DataType(int(s)).name)
         except ValueError:
             return s
     return s
@@ -111,7 +112,7 @@ def drop_collection(client: MilvusClient, name: str) -> None:
 
 def describe_index(client: MilvusClient, collection: str, field_name: str) -> dict[str, Any] | None:
     for idx in client.list_indexes(collection_name=collection) or []:
-        info = client.describe_index(collection_name=collection, index_name=idx)
+        info: dict[str, Any] = client.describe_index(collection_name=collection, index_name=idx)
         if info.get("field_name") == field_name:
             return info
     return None
@@ -129,7 +130,7 @@ def create_index(
     collection: str,
     field_name: str,
     index_type: IndexType,
-    metric_type: Literal["L2", "IP", "COSINE"],
+    metric_type: MetricType,
     params: dict[str, Any] | None = None,
 ) -> Literal["created", "reused", "rebuilt"]:
     """Idempotent create / drop-and-rebuild on param mismatch."""

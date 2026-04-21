@@ -7,15 +7,16 @@ import logging
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from pymilvus import DataType
+from pymilvus import CollectionSchema, DataType
 
 from .. import zilliz_cli
 from ..chunking import ChunkConfig, chunk_text
 from ..client import Backend, MilvusClient, detect_target
-from ..embeddings import make_embedder
+from ..embeddings import EmbeddingProvider, make_embedder
 from ..errors import ClusterNotReadyError, LaunchpadError
 from ..ingest import ingest_documents
 from ..operations import build_basic_schema, create_collection, create_index, load_collection
@@ -38,7 +39,7 @@ IMPORT_POLL_CAP_SEC = 30 * 60
 logger = logging.getLogger(__name__)
 
 
-def _schema_from_plan(plan_schema: dict[str, Any]):
+def _schema_from_plan(plan_schema: dict[str, Any]) -> CollectionSchema:
     extras: list[tuple[str, DataType, int | None]] = []
     for f in plan_schema["extra_fields"]:
         dt, maxlen = DTYPE_MAP.get(f["type"], (DataType.VARCHAR, 256))
@@ -56,7 +57,7 @@ def _schema_from_plan(plan_schema: dict[str, Any]):
 
 def _iter_documents(
     plan: dict[str, Any], run_dir: Path, sample: str | None, input_path: str | None
-):
+) -> Iterator[dict[str, Any]]:
     if sample:
         yield from load_sample(sample)
         return
@@ -172,7 +173,7 @@ def _bulk_import(
     docs: list[dict[str, Any]],
     plan: dict[str, Any],
     run_dir: Path,
-    embedder,
+    embedder: EmbeddingProvider,
     chunk_config: ChunkConfig,
     cluster_id: str,
 ) -> dict[str, Any]:

@@ -35,7 +35,8 @@ def _load_plan() -> dict[str, Any]:
     if not run_dir:
         raise RuntimeError("LAUNCHPAD_RUN_DIR is not set")
     plan_path = Path(run_dir) / "plan.json"
-    return json.loads(plan_path.read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads(plan_path.read_text(encoding="utf-8"))
+    return data
 
 
 _plan_cache: dict[str, Any] | None = None

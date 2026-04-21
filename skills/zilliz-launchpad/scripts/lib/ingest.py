@@ -83,6 +83,23 @@ def ingest_documents(
     """
     chunk_config = chunk_config or ChunkConfig()
 
+    pending_rows: list[dict[str, Any]] = []
+    pending_texts: list[str] = []
+    stats_docs = 0
+    stats_chunks = 0
+    stats_batches = 0
+    stats_retries = 0
+
+    def _flush() -> Iterator[dict[str, Any]]:
+        if not pending_rows:
+            return
+        vectors = embedder.embed(pending_texts)
+        for row, vec in zip(pending_rows, vectors, strict=True):
+            row[vector_field] = vec
+            yield row
+        pending_rows.clear()
+        pending_texts.clear()
+
     def gen_rows() -> Iterator[dict[str, Any]]:
         nonlocal stats_chunks, stats_docs
         for doc in documents:
@@ -106,23 +123,6 @@ def ingest_documents(
                     yield from _flush()
 
         yield from _flush()
-
-    def _flush() -> Iterator[dict[str, Any]]:
-        if not pending_rows:
-            return
-        vectors = embedder.embed(pending_texts)
-        for row, vec in zip(pending_rows, vectors, strict=True):
-            row[vector_field] = vec
-            yield row
-        pending_rows.clear()
-        pending_texts.clear()
-
-    pending_rows: list[dict[str, Any]] = []
-    pending_texts: list[str] = []
-    stats_docs = 0
-    stats_chunks = 0
-    stats_batches = 0
-    stats_retries = 0
 
     for batch in _batched(gen_rows(), batch_size):
         stats_retries += _insert_with_retry(client, collection, batch)

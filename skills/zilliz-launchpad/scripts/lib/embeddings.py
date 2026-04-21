@@ -50,9 +50,9 @@ class VoyageEmbedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         import voyageai
 
-        client = voyageai.Client(api_key=resolve_required("VOYAGE_API_KEY"))
+        client = voyageai.Client(api_key=resolve_required("VOYAGE_API_KEY"))  # type: ignore[attr-defined]
         result = client.embed(texts, model=self.model, input_type="document")
-        return list(result.embeddings)
+        return [list(e) for e in result.embeddings]
 
 
 @dataclass
@@ -66,7 +66,7 @@ class CohereEmbedder:
 
         client = cohere.Client(api_key=resolve_required("COHERE_API_KEY"))
         resp = client.embed(texts=texts, model=self.model, input_type="search_document")
-        return list(resp.embeddings)
+        return [[float(x) for x in e] for e in resp.embeddings]
 
 
 @dataclass

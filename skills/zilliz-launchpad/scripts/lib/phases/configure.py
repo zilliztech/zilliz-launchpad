@@ -100,6 +100,7 @@ def run_configure(
     out_dir: Path,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    data: dict[str, Any]
     if from_json:
         with Path(from_json).open("r", encoding="utf-8") as f:
             data = json.load(f)

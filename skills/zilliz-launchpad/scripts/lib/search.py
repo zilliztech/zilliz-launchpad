@@ -31,11 +31,8 @@ def _hits_from_milvus(raw: Sequence[Any]) -> list[Hit]:
     for h in raw:
         # pymilvus 2.4+ hit objects expose `id`, `distance`/`score`, and `entity`
         hid = str(getattr(h, "id", None) or h.get("id") if isinstance(h, dict) else h.id)
-        score = float(
-            getattr(h, "score", None)
-            if getattr(h, "score", None) is not None
-            else getattr(h, "distance", 0.0)
-        )
+        raw_score = getattr(h, "score", None) or getattr(h, "distance", 0.0) or 0.0
+        score = float(raw_score)
         entity = getattr(h, "entity", None) or (h.get("entity") if isinstance(h, dict) else {})
         fields = dict(entity) if entity else {}
         out.append(Hit(id=hid, score=score, fields=fields))

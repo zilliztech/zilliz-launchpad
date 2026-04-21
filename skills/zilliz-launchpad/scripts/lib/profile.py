@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import jsonschema
+import jsonschema  # type: ignore[import-untyped]
 
 from .errors import InvalidProfileError
 
@@ -17,7 +17,8 @@ _SCHEMA_PATH = (
 
 def load_schema() -> dict[str, Any]:
     with _SCHEMA_PATH.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        data: dict[str, Any] = json.load(f)
+    return data
 
 
 def load_profile(run_dir: Path) -> dict[str, Any]:
