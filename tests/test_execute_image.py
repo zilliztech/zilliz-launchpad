@@ -10,10 +10,9 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 from lib.errors import MissingCredentialError
 from lib.phases.execute import _ingest_image_rows, run_execute
 
@@ -183,15 +182,17 @@ def test_voyage_missing_key_errors_before_milvus(tmp_path: Path, monkeypatch: py
 
     # If MilvusClient were constructed we'd hit an unrelated connection error;
     # the test asserts MissingCredentialError fires first.
-    with patch("lib.phases.execute.MilvusClient", side_effect=AssertionError("touched milvus")):
-        with pytest.raises(MissingCredentialError) as exc:
-            run_execute(
-                out_dir=tmp_path,
-                sample=None,
-                input_path=None,
-                ui_port=8000,
-                start_ui=False,
-            )
+    with (
+        patch("lib.phases.execute.MilvusClient", side_effect=AssertionError("touched milvus")),
+        pytest.raises(MissingCredentialError) as exc,
+    ):
+        run_execute(
+            out_dir=tmp_path,
+            sample=None,
+            input_path=None,
+            ui_port=8000,
+            start_ui=False,
+        )
     assert exc.value.payload["env_var"] == "VOYAGE_API_KEY"
 
 

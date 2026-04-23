@@ -14,7 +14,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from lib.errors import InvalidProfileError, JudgeUnavailableError
 from lib.evaluator import JudgeConfig
 from lib.phases.evaluate import (
