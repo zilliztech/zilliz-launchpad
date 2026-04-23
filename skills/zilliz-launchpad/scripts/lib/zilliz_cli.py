@@ -18,6 +18,7 @@ import subprocess
 from typing import Any
 
 from .errors import (
+    ClusterCreateFailedError,
     LaunchpadError,
     ZillizCliAuthError,
     ZillizCliMissingError,
@@ -181,15 +182,80 @@ def cluster_describe(cluster_id: str) -> dict[str, Any]:
     return data
 
 
-def cluster_create_stub(*_args: Any, **_kwargs: Any) -> None:
-    """Placeholder for Phase 6 Deploy.
+def cluster_create(
+    *,
+    cluster_name: str,
+    plan: str,
+    region: str,
+    project_id: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Provision a new Zilliz Cloud cluster.
 
-    Intentionally raises so any accidental call surfaces the fact that
-    Deploy is not yet implemented.
+    Wraps `zilliz cluster create`. Plan names (Serverless / Standard /
+    Enterprise) and region codes (e.g. gcp-us-west1) come from the caller;
+    we stay agnostic and forward them verbatim. Returns the parsed CLI
+    response (expected to carry the new cluster id under one of the keys
+    in `_CLUSTER_ID_KEYS`).
+
+    Raises `ClusterCreateFailedError` on non-zero exit so callers can
+    surface the stderr + exit code through the standard envelope.
     """
-    raise NotImplementedError(
-        "cluster_create is part of the future Phase 6 Deploy change; not implemented yet."
+    _require_available()
+    args = [
+        "cluster",
+        "create",
+        "--cluster-name",
+        cluster_name,
+        "--plan",
+        plan,
+        "--region",
+        region,
+        "--output",
+        "json",
+    ]
+    if project_id:
+        args += ["--project-id", project_id]
+    if extra:
+        for k, v in extra.items():
+            args += [f"--{k}", str(v)]
+
+    result = subprocess.run(  # noqa: S603 — fixed binary, args built from our wrapper
+        [BINARY, *args],
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    if result.returncode != 0:
+        stderr = _mask(result.stderr or "").strip()
+        raise ClusterCreateFailedError(stderr=stderr, exit_code=result.returncode)
+
+    data = _json_stdout(result)
+    if not isinstance(data, dict):
+        raise LaunchpadError("zilliz cluster create returned an unexpected shape")
+    return data
+
+
+# Common id-field names `zilliz cluster create` may use in JSON output.
+_CLUSTER_ID_KEYS = ("cluster_id", "clusterId", "id", "ID")
+
+
+def extract_cluster_id(payload: dict[str, Any]) -> str | None:
+    """Best-effort id extraction across CLI versions.
+
+    Some CLI versions nest the cluster under `cluster:` or `data:`.
+    We check the top level first, then those two wrappers.
+    """
+    for key in _CLUSTER_ID_KEYS:
+        if isinstance(payload.get(key), str) and payload[key]:
+            return str(payload[key])
+    for wrap in ("cluster", "data"):
+        nested = payload.get(wrap)
+        if isinstance(nested, dict):
+            for key in _CLUSTER_ID_KEYS:
+                if isinstance(nested.get(key), str) and nested[key]:
+                    return str(nested[key])
+    return None
 
 
 def import_create(

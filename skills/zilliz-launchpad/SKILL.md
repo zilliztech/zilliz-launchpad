@@ -5,14 +5,16 @@ description: Turn a sample document into a running Milvus / Zilliz Cloud search 
 
 # zilliz-launchpad
 
-You are running the **zilliz-launchpad** skill. Your job is to take a user from *"I have some documents I want to search"* to *"a working local search UI on Milvus / Zilliz Cloud"* with as little friction as possible.
+You are running the **zilliz-launchpad** skill. Your job is to take a user from *"I have some documents I want to search"* to *"a working search app on Milvus / Zilliz Cloud, scored for quality, running in production"* with as little friction as possible.
 
-The skill has **four phases for the MVP** (Phases 5 and 6 are future work):
+The skill has **six phases**:
 
 1. **Collect** — analyze a sample file, detect its shape, suggest primary-key and text fields
 2. **Configure** — capture the user's intent (use case, dataset size, deployment target, preferences)
 3. **Plan** — deterministically design collection schema, embedding, index, and pipeline
 4. **Execute** — create the collection, ingest data, start a Next.js demo UI
+5. **Evaluate** — score retrieval / latency / RAG quality; compare plan variants side-by-side
+6. **Deploy** — promote the local Execute run to Zilliz Cloud with observability wired
 
 Every imperative action goes through the CLI `scripts/zilliz_ops.py`. Phases write outputs into `scripts/runs/<utc-iso>/`.
 
@@ -26,6 +28,8 @@ Do not start a phase before the previous one has produced its artifact. If a pha
 | 2 Configure  | `configure`  | `--from-json <file>` or flags          | `configure.json` |
 | 3 Plan       | `plan`       | run dir with collect + configure       | `plan.json`, `plan.md` |
 | 4 Execute    | `execute`    | run dir with plan                      | `execute.json` (+ live Milvus + running sidecar) |
+| 5 Evaluate   | `evaluate`   | run dir with execute                   | `eval_report.json`, `eval_report.md` |
+| 6 Deploy     | `deploy`     | run dir with execute + Cloud credentials | `deploy.json` (+ `observability.json`) |
 
 ## Before anything else
 
@@ -63,7 +67,8 @@ Install the [zilliz CLI](https://github.com/zilliztech/zilliz-cli) (≥ 0.3.0) t
 | 4 Execute pre-flight | `zilliz cluster describe` gates on `RUNNING`; fails fast with `cluster_not_ready` | skipped |
 | 4 Execute bulk | `zilliz import create` for corpora above `bulk_import_threshold` (default 100k) | client-side upsert |
 | 2/4 Token fallback | `zilliz auth whoami` returns a scoped token when `ZILLIZ_TOKEN` is unset | `missing_credential` |
-| 6 Deploy (future) | `zilliz cluster create` will be wired here | n/a — Deploy requires the CLI |
+| 6 Deploy create | `zilliz cluster create` provisions a new cluster when `--create --confirm` is passed | prompt for `--cluster-id` of an existing cluster |
+| 6 Deploy bulk | `zilliz import create` for corpora above the plan's threshold | client-side upsert |
 
 ## Reference lazy-loading
 
@@ -75,8 +80,8 @@ Load only the references you need for the current phase. Do not prefetch all of 
 | 2 Configure  | `knowledge/rag_templates.md`, `deploy-*.md` (match the user's target) |
 | 3 Plan       | `knowledge/dense_embedding_models.md`, `knowledge/sparse_embedding_models.md`, `knowledge/index_tuning.md`, `knowledge/schema_design.md`, `knowledge/hybrid_search_guide.md`, `knowledge/reranker_guide.md` |
 | 4 Execute    | `cli-reference.md` |
-
-`observability/` is Phase 6 (Deploy) territory — do not load in MVP.
+| 5 Evaluate   | `knowledge/evaluation_guide.md` |
+| 6 Deploy     | `observability/metrics.md`, `observability/query-analysis.md`, `deploy-*.md` (match the target) |
 
 ## Invoking phases
 
@@ -95,6 +100,12 @@ uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py plan
 
 # Phase 4
 uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py execute --sample movies
+
+# Phase 5 — derived smoke eval, or with --qrels / --compare for a real eval
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py evaluate
+
+# Phase 6 — promote to an existing Cloud cluster, or --create --confirm to provision
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py deploy --cluster-id <id>
 ```
 
 On success of Phase 4, start the demo UI:
@@ -126,13 +137,17 @@ Known codes and how to react:
 | `zilliz_cli_missing`  | a Cloud-only feature needs `zilliz`; point at `install_url` in the payload |
 | `zilliz_cli_auth`     | CLI present but not logged in; tell the user to run `zilliz auth login` |
 | `cluster_not_ready`   | pre-flight found a non-RUNNING cluster; surface `state` + `remediation` verbatim |
+| `qrels_missing`       | comparison mode needs labels; ask the user for `--qrels <path>` |
+| `judge_unavailable`   | `--judge-llm` requested but the provider's API key env var is unset |
+| `cluster_create_failed` | surface `stderr` and `exit_code` verbatim; often a quota or region issue |
+| `bulk_import_failed`  | include `job_id` when telling the user to check their Cloud console |
+| `destructive_without_confirm` | `deploy --create` needs `--confirm`; summarise projected cost before re-running |
 
-## What this MVP does *not* do
+## What this skill does *not* do
 
 - No Milvus Lite (only Standalone + Zilliz Cloud)
 - No MCP server (the CLI is designed so one can be added later without touching `lib/`)
 - No on-device embedding — API providers only
-- No Evaluate or Deploy phase (Phases 5–6 are future work)
 - No multi-modal data — text only
 - No IDE integration beyond Claude Code
 

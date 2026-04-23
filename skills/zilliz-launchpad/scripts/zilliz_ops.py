@@ -6,6 +6,7 @@ Phase-to-subcommand mapping:
   plan       → Phase 3
   execute    → Phase 4
   evaluate   → Phase 5
+  deploy     → Phase 6
 
 Usage (typical):
   python scripts/zilliz_ops.py collect --sample movies
@@ -13,6 +14,7 @@ Usage (typical):
   python scripts/zilliz_ops.py plan
   python scripts/zilliz_ops.py execute --sample movies
   python scripts/zilliz_ops.py evaluate
+  python scripts/zilliz_ops.py deploy --cluster-id <id>
 """
 
 from __future__ import annotations
@@ -25,12 +27,13 @@ import typer
 from lib.errors import CliErrorEnvelope, LaunchpadError
 from lib.phases import collect as phase_collect
 from lib.phases import configure as phase_configure
+from lib.phases import deploy as phase_deploy
 from lib.phases import evaluate as phase_evaluate
 from lib.phases import execute as phase_execute
 from lib.phases import plan as phase_plan
 from lib.run_dir import latest_run_dir, new_run_dir, resolve_run_dir
 
-app = typer.Typer(help="zilliz-launchpad — Phases 1–5")
+app = typer.Typer(help="zilliz-launchpad — Phases 1–6")
 
 
 def _fail(err: LaunchpadError) -> None:
@@ -192,6 +195,49 @@ def evaluate(
     if report["variants"]:
         typer.echo(f"variants scored: {len(report['variants'])}")
     typer.echo(f"report: {out / 'eval_report.md'}")
+
+
+@app.command()
+def deploy(
+    run_dir: str | None = typer.Option(None, "--run-dir"),
+    cluster_id: str | None = typer.Option(
+        None, "--cluster-id", help="Target an existing RUNNING cluster"
+    ),
+    create: bool = typer.Option(
+        False, "--create", help="Provision a new cluster via `zilliz cluster create`"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Required with --create to acknowledge billing impact"
+    ),
+    stop_local: bool = typer.Option(
+        False, "--stop-local", help="Stop the Phase 4 local UI sidecar after deploy"
+    ),
+) -> None:
+    """Phase 6 — promote the Execute run to Zilliz Cloud."""
+    out = resolve_run_dir(run_dir)
+    try:
+        report = phase_deploy.run_deploy(
+            out_dir=out,
+            cluster_id=cluster_id,
+            create=create,
+            confirm=confirm,
+            stop_local=stop_local,
+        )
+    except LaunchpadError as e:
+        _fail(e)
+    typer.echo(f"run-dir: {out}")
+    typer.echo(f"cluster: {report['cluster_id']} ({report['cluster_uri']})")
+    typer.echo(f"collection: {report['collection_name']}")
+    typer.echo(
+        f"ingest: {report['ingest_mode']} "
+        f"({report['ingest_row_count']} rows, status={report['ingest_status']})"
+    )
+    obs = report.get("observability") or {}
+    if obs.get("grafana_dashboard"):
+        typer.echo(f"grafana: {obs['grafana_dashboard']}")
+    if obs.get("prometheus_url"):
+        typer.echo(f"prometheus: {obs['prometheus_url']}")
+    typer.echo(f"deploy.json: {out / 'deploy.json'}")
 
 
 if __name__ == "__main__":

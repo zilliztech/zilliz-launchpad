@@ -233,9 +233,81 @@ def test_import_describe_parses_state():
         assert zilliz_cli.import_describe("j1")["state"] == "DONE"
 
 
-def test_cluster_create_stub_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        zilliz_cli.cluster_create_stub()
+def test_cluster_create_invokes_cli_with_plan_and_region():
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if args[1:2] == ["version"]:
+            return _completed(stdout=json.dumps({"version": "0.3.0"}))
+        if args[1:3] == ["auth", "whoami"]:
+            return _completed(stdout=json.dumps({"token": "za_x"}))
+        if args[1:3] == ["cluster", "create"]:
+            return _completed(stdout=json.dumps({"cluster_id": "c-new"}))
+        return _completed(returncode=1)
+
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+    ):
+        out = zilliz_cli.cluster_create(
+            cluster_name="launchpad-x",
+            plan="Serverless",
+            region="gcp-us-west1",
+            project_id=None,
+            extra=None,
+        )
+    assert out["cluster_id"] == "c-new"
+    # The create invocation must pass the three key arguments
+    create_args = [a for a in calls if a[1:3] == ["cluster", "create"]][0]
+    assert "--cluster-name" in create_args and "launchpad-x" in create_args
+    assert "--plan" in create_args and "Serverless" in create_args
+    assert "--region" in create_args and "gcp-us-west1" in create_args
+
+
+def test_cluster_create_nonzero_raises_cluster_create_failed():
+    from lib.errors import ClusterCreateFailedError
+
+    def fake_run(args, **kwargs):
+        if args[1:2] == ["version"]:
+            return _completed(stdout=json.dumps({"version": "0.3.0"}))
+        if args[1:3] == ["auth", "whoami"]:
+            return _completed(stdout=json.dumps({"token": "za_x"}))
+        if args[1:3] == ["cluster", "create"]:
+            return _completed(returncode=2, stderr="quota exceeded; za_TOKEN embedded")
+        return _completed(returncode=1)
+
+    with (
+        patch("lib.zilliz_cli.shutil.which", return_value="/usr/bin/zilliz"),
+        patch("lib.zilliz_cli.subprocess.run", side_effect=fake_run),
+        pytest.raises(ClusterCreateFailedError) as info,
+    ):
+        zilliz_cli.cluster_create(
+            cluster_name="x",
+            plan="Serverless",
+            region="r",
+            project_id=None,
+            extra=None,
+        )
+    assert info.value.payload["exit_code"] == 2
+    # Tokens must be scrubbed from stderr before bubbling up
+    assert "za_TOKEN" not in info.value.payload["stderr"]
+    assert "za_***" in info.value.payload["stderr"]
+
+
+def test_extract_cluster_id_finds_top_level():
+    assert zilliz_cli.extract_cluster_id({"cluster_id": "c-1"}) == "c-1"
+    assert zilliz_cli.extract_cluster_id({"clusterId": "c-2"}) == "c-2"
+    assert zilliz_cli.extract_cluster_id({"id": "c-3"}) == "c-3"
+
+
+def test_extract_cluster_id_finds_nested():
+    assert zilliz_cli.extract_cluster_id({"cluster": {"id": "c-9"}}) == "c-9"
+    assert zilliz_cli.extract_cluster_id({"data": {"clusterId": "c-10"}}) == "c-10"
+
+
+def test_extract_cluster_id_missing_returns_none():
+    assert zilliz_cli.extract_cluster_id({"unrelated": "x"}) is None
 
 
 def test_whoami_output_not_logged(caplog: Any):
