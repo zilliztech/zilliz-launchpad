@@ -47,6 +47,16 @@ def collect(
     sample: str | None = typer.Option(None, "--sample", "-s", help="Bundled sample name"),
     input: Path | None = typer.Option(None, "--input", "-i", help="Path to user data"),  # noqa: B008
     run_dir: str | None = typer.Option(None, "--run-dir", help="Existing run dir; default = new"),
+    with_thumbnails: bool | None = typer.Option(
+        None,
+        "--with-thumbnails/--no-thumbnails",
+        help="Image dir only. Default: on for ≤5000 images, off above.",
+    ),
+    thumbnail_cap_rows: int = typer.Option(
+        5000,
+        "--thumbnail-cap-rows",
+        help="Image dir only. Auto-disable thumbnails above this many images.",
+    ),
 ) -> None:
     """Phase 1 — analyze sample data."""
     if sample is None and input is None:
@@ -58,13 +68,22 @@ def collect(
     out = resolve_run_dir(run_dir) if run_dir else new_run_dir(label="collect")
     try:
         result = phase_collect.run_collect(
-            input_path=str(input) if input else None, sample=sample, out_dir=out
+            input_path=str(input) if input else None,
+            sample=sample,
+            out_dir=out,
+            with_thumbnails=with_thumbnails,
+            thumbnail_cap_rows=thumbnail_cap_rows,
         )
     except LaunchpadError as e:
         _fail(e)
     typer.echo(f"run-dir: {out}")
-    typer.echo(f"suggested_primary_key: {result['suggested_primary_key']}")
-    typer.echo(f"suggested_text_field: {result['suggested_text_field']}")
+    if result.get("data_shape") == "image_dir":
+        typer.echo("data_shape: image_dir")
+        typer.echo(f"images: {result['record_count_estimate']}")
+        typer.echo(f"thumbnails_included: {result['thumbnails_included']}")
+    else:
+        typer.echo(f"suggested_primary_key: {result['suggested_primary_key']}")
+        typer.echo(f"suggested_text_field: {result['suggested_text_field']}")
 
 
 @app.command()
