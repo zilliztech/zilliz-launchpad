@@ -433,8 +433,10 @@ def _run_image_execute(
                 for hit in batch_res:
                     entity = getattr(hit, "entity", None)
                     pk_val = (
-                        entity.get(pk_field) if entity is not None else hit.get(pk_field)
-                    ) if hasattr(hit, "get") or entity is not None else None
+                        (entity.get(pk_field) if entity is not None else hit.get(pk_field))
+                        if hasattr(hit, "get") or entity is not None
+                        else None
+                    )
                     smoke_hits.append(
                         {
                             "id": str(pk_val) if pk_val else "",
@@ -488,9 +490,7 @@ def run_execute(
 
     # Image branch: short-circuit before any text-flow work.
     if plan["embedding"].get("modality") == "image":
-        return _run_image_execute(
-            out_dir=out_dir, plan=plan, ui_port=ui_port, start_ui=start_ui
-        )
+        return _run_image_execute(out_dir=out_dir, plan=plan, ui_port=ui_port, start_ui=start_ui)
 
     # Pre-flight when we have a CLI-resolved cluster_id
     preflight: dict[str, Any] | None = None

@@ -253,11 +253,7 @@ def _plan_to_markdown(plan: PlanSpec) -> str:
     sparse_line = (
         f"- Sparse field: `{plan.schema['sparse_field']}`"
         if plan.sparse_enabled
-        else (
-            "- Sparse field: disabled (image collection)"
-            if is_image
-            else "- Sparse: disabled"
-        )
+        else ("- Sparse field: disabled (image collection)" if is_image else "- Sparse: disabled")
     )
     embedding_lines = [
         "## Embedding",

@@ -236,8 +236,10 @@ def _image_search(req: SearchRequest) -> SearchResponse:
         for raw in batch:
             entity = getattr(raw, "entity", None)
             pk_val = (
-                entity.get(pk) if entity is not None else raw.get(pk)
-            ) if hasattr(raw, "get") or entity is not None else None
+                (entity.get(pk) if entity is not None else raw.get(pk))
+                if hasattr(raw, "get") or entity is not None
+                else None
+            )
             score = float(getattr(raw, "score", 0.0) or 0.0)
             if not score and hasattr(raw, "get"):
                 score = float(raw.get("distance", 0.0) or 0.0)
