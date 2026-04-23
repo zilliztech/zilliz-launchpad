@@ -67,9 +67,7 @@ def caption_image(provider: str, model: str, image_path: Path | str) -> str:
     raise JudgeUnavailableError(provider=f"{provider}:{model}", env_var="UNKNOWN")
 
 
-def caption_images(
-    provider: str, model: str, paths: Iterable[Path | str]
-) -> list[str]:
+def caption_images(provider: str, model: str, paths: Iterable[Path | str]) -> list[str]:
     """Sequential captioning. Vision APIs are slow + rate-limited; parallelism
     is left to the caller (Phase 5 typically only captions ~25 derived images).
     """

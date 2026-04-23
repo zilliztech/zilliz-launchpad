@@ -482,8 +482,10 @@ def _evaluate_single_image(
             for hit in batch:
                 entity = getattr(hit, "entity", None)
                 pk_val = (
-                    entity.get(pk) if entity is not None else hit.get(pk)
-                ) if hasattr(hit, "get") or entity is not None else None
+                    (entity.get(pk) if entity is not None else hit.get(pk))
+                    if hasattr(hit, "get") or entity is not None
+                    else None
+                )
                 ids.append(str(pk_val) if pk_val else "")
         return ids
 

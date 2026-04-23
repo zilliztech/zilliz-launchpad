@@ -52,9 +52,7 @@ def test_default_image_plan_picks_clip_local():
 
 
 def test_voyage_multimodal_override_flows_through():
-    plan = plan_from_profile(
-        _image_profile(embedding_preference="voyage-multimodal-3")
-    ).to_dict()
+    plan = plan_from_profile(_image_profile(embedding_preference="voyage-multimodal-3")).to_dict()
     assert plan["embedding"]["provider"] == VOYAGE_MULTIMODAL_EMBEDDING["provider"]
     assert plan["embedding"]["model"] == "voyage-multimodal-3"
     assert plan["embedding"]["dim"] == 1024
