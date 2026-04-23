@@ -119,6 +119,62 @@ class ClusterNotReadyError(LaunchpadError):
         )
 
 
+class QrelsMissingError(LaunchpadError):
+    code = "qrels_missing"
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message or "Comparison mode requires labelled qrels to rank variants",
+            remediation="Pass --qrels <path> with {query, relevant_ids[]} per line",
+        )
+
+
+class JudgeUnavailableError(LaunchpadError):
+    code = "judge_unavailable"
+
+    def __init__(self, *, provider: str, env_var: str) -> None:
+        super().__init__(
+            f"Judge LLM '{provider}' requested but no credential is configured",
+            provider=provider,
+            env_var=env_var,
+            export_hint=f"export {env_var}=<value>",
+        )
+
+
+class ClusterCreateFailedError(LaunchpadError):
+    code = "cluster_create_failed"
+
+    def __init__(self, *, stderr: str, exit_code: int) -> None:
+        super().__init__(
+            "zilliz cluster create failed",
+            stderr=stderr,
+            exit_code=exit_code,
+        )
+
+
+class BulkImportFailedError(LaunchpadError):
+    code = "bulk_import_failed"
+
+    def __init__(self, *, job_id: str | None, reason: str) -> None:
+        super().__init__(
+            f"zilliz import job {job_id or '(no-id)'} failed: {reason}",
+            job_id=job_id,
+            reason=reason,
+        )
+
+
+class DestructiveWithoutConfirmError(LaunchpadError):
+    code = "destructive_without_confirm"
+
+    def __init__(self, *, action: str, resources: list[str]) -> None:
+        super().__init__(
+            f"Refusing to run destructive action '{action}' without --confirm",
+            action=action,
+            resources=resources,
+            remediation="Re-run with --confirm after reviewing projected impact",
+        )
+
+
 @dataclass
 class CliErrorEnvelope:
     """Uniform envelope emitted to stderr on failure."""

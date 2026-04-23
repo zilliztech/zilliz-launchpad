@@ -1,16 +1,18 @@
 """zilliz-launchpad CLI.
 
-Phase-to-subcommand mapping (1:1):
+Phase-to-subcommand mapping:
   collect    → Phase 1
   configure  → Phase 2
   plan       → Phase 3
   execute    → Phase 4
+  evaluate   → Phase 5
 
 Usage (typical):
   python scripts/zilliz_ops.py collect --sample movies
   python scripts/zilliz_ops.py configure --from-json configure.json
   python scripts/zilliz_ops.py plan
   python scripts/zilliz_ops.py execute --sample movies
+  python scripts/zilliz_ops.py evaluate
 """
 
 from __future__ import annotations
@@ -23,11 +25,12 @@ import typer
 from lib.errors import CliErrorEnvelope, LaunchpadError
 from lib.phases import collect as phase_collect
 from lib.phases import configure as phase_configure
+from lib.phases import evaluate as phase_evaluate
 from lib.phases import execute as phase_execute
 from lib.phases import plan as phase_plan
 from lib.run_dir import latest_run_dir, new_run_dir, resolve_run_dir
 
-app = typer.Typer(help="zilliz-launchpad — MVP Phases 1–4")
+app = typer.Typer(help="zilliz-launchpad — Phases 1–5")
 
 
 def _fail(err: LaunchpadError) -> None:
@@ -138,6 +141,57 @@ def execute(
     if report.get("sidecar_pid"):
         typer.echo(f"UI sidecar pid {report['sidecar_pid']} on port {report['ui_port']}")
         typer.echo("Start the Next.js UI: (cd scripts/ui && pnpm install && pnpm dev)")
+
+
+@app.command()
+def evaluate(
+    run_dir: str | None = typer.Option(None, "--run-dir"),
+    qrels: Path | None = typer.Option(None, "--qrels", help="JSONL with {query, relevant_ids[]}"),  # noqa: B008
+    queries: Path | None = typer.Option(None, "--queries", help="Plain query list, one per line"),  # noqa: B008
+    concurrency: int = typer.Option(1, "--concurrency", min=1, max=64),
+    judge_llm: str | None = typer.Option(
+        None, "--judge-llm", help="<provider>:<model> — enables ragas metrics"
+    ),
+    compare: Path | None = typer.Option(  # noqa: B008
+        None, "--compare", help="variants.yaml for comparison mode"
+    ),
+    allow_large: bool = typer.Option(False, "--allow-large", help="Override the 6-variant cap"),
+) -> None:
+    """Phase 5 — score retrieval/latency/RAG quality against the live collection."""
+    out = resolve_run_dir(run_dir)
+    try:
+        report = phase_evaluate.run_evaluate(
+            out_dir=out,
+            qrels_path=str(qrels) if qrels else None,
+            queries_path=str(queries) if queries else None,
+            concurrency=concurrency,
+            judge_llm=judge_llm,
+            compare_path=str(compare) if compare else None,
+            allow_large=allow_large,
+        )
+    except LaunchpadError as e:
+        _fail(e)
+    typer.echo(f"run-dir: {out}")
+    typer.echo(f"queries: {report['query_count']} (derived={report['derived']})")
+    latency = report["latency_metrics"]
+    if latency.get("count"):
+        typer.echo(
+            f"latency: p50={latency['p50_ms']:.1f}ms "
+            f"p95={latency['p95_ms']:.1f}ms "
+            f"p99={latency['p99_ms']:.1f}ms"
+        )
+    retrieval = report["retrieval_metrics"]
+    if retrieval:
+        typer.echo(
+            f"retrieval: recall@10={retrieval['recall@10']:.3f} "
+            f"MRR@10={retrieval['MRR@10']:.3f} "
+            f"NDCG@10={retrieval['NDCG@10']:.3f}"
+        )
+    if report["rag_metrics"]:
+        typer.echo(f"rag: {json.dumps(report['rag_metrics'], sort_keys=True)}")
+    if report["variants"]:
+        typer.echo(f"variants scored: {len(report['variants'])}")
+    typer.echo(f"report: {out / 'eval_report.md'}")
 
 
 if __name__ == "__main__":
