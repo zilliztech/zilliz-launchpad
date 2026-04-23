@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
 from .. import zilliz_cli
-from ..errors import LaunchpadError
+from ..errors import InvalidProfileError, LaunchpadError
 
 DEFAULTS: dict[str, Any] = {
     "use_case": "rag",
@@ -26,6 +27,17 @@ DEFAULTS: dict[str, Any] = {
     "hybrid_preference": "auto",
     "reranker_preference": "auto",
 }
+
+KNOWN_USE_CASES = {
+    "rag",
+    "semantic-search",
+    "hybrid-search",
+    "recommendation",
+    "image-search",
+}
+
+IMAGE_USE_CASES = {"image-search"}
+TEXT_DATA_SHAPES = {"jsonl", "csv", "text"}
 
 CLOUD_TARGETS = {"zilliz-serverless", "zilliz-dedicated", "zilliz-byoc"}
 TARGET_TIER_MAP = {
@@ -94,6 +106,57 @@ def _discover_cluster(
     }
 
 
+def _read_collect_data_shape(out_dir: Path) -> str | None:
+    collect_path = out_dir / "collect.json"
+    if not collect_path.exists():
+        return None
+    try:
+        with collect_path.open("r", encoding="utf-8") as f:
+            shape = json.load(f).get("data_shape")
+    except (json.JSONDecodeError, OSError):
+        return None
+    return str(shape) if shape is not None else None
+
+
+def _apply_image_search_defaults(data: dict[str, Any]) -> None:
+    """Force hybrid off and reranker none for image collections.
+
+    Warns to stderr if the user passed conflicting preferences so the
+    override is visible, not silent.
+    """
+    silent_hybrid = (None, False, "off", "none", "auto")
+    silent_reranker = (None, "none", "off", "auto")
+    conflicting: list[tuple[str, Any]] = []
+    if data.get("hybrid_preference") not in silent_hybrid:
+        conflicting.append(("hybrid_preference", data["hybrid_preference"]))
+    if data.get("reranker_preference") not in silent_reranker:
+        conflicting.append(("reranker_preference", data["reranker_preference"]))
+    data["hybrid_preference"] = False
+    data["reranker_preference"] = "none"
+    for key, value in conflicting:
+        print(
+            f"warn: --use-case image-search overrides {key}={value!r} → forced off",
+            file=sys.stderr,
+        )
+
+
+def _validate_modality(data: dict[str, Any], data_shape: str | None) -> None:
+    use_case = data.get("use_case")
+    if data_shape is None:
+        return
+    if data_shape == "image_dir" and use_case not in IMAGE_USE_CASES:
+        raise InvalidProfileError(
+            "use_case",
+            f"collect detected image_dir but use_case={use_case!r} expects text — "
+            f"set --use-case image-search or pick a text input",
+        )
+    if data_shape in TEXT_DATA_SHAPES and use_case in IMAGE_USE_CASES:
+        raise InvalidProfileError(
+            "use_case",
+            f"collect detected {data_shape} but use_case=image-search expects an image directory",
+        )
+
+
 def run_configure(
     *,
     from_json: str | None,
@@ -110,6 +173,18 @@ def run_configure(
         for k, v in overrides.items():
             if v is not None:
                 data[k] = v
+
+    use_case = data.get("use_case")
+    if use_case not in KNOWN_USE_CASES:
+        raise InvalidProfileError(
+            "use_case",
+            f"unknown use_case={use_case!r}. Pick one of {sorted(KNOWN_USE_CASES)}",
+        )
+
+    _validate_modality(data, _read_collect_data_shape(out_dir))
+
+    if use_case in IMAGE_USE_CASES:
+        _apply_image_search_defaults(data)
 
     deployment_target = data.get("deployment_target", "local-standalone")
     preferred_id = data.get("cluster_id")
