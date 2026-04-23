@@ -12,11 +12,17 @@ from pathlib import Path
 from typing import Any
 
 from pymilvus import CollectionSchema, DataType
+from pymilvus import MilvusClient as PyMilvusClient
 
 from .. import zilliz_cli
 from ..chunking import ChunkConfig, chunk_text
 from ..client import Backend, MilvusClient, detect_target
-from ..embeddings import EmbeddingProvider, make_embedder
+from ..embeddings import (
+    EmbeddingProvider,
+    embed_text_with_clip,
+    make_embedder,
+    make_image_embedder,
+)
 from ..errors import ClusterNotReadyError, LaunchpadError
 from ..ingest import ingest_documents
 from ..operations import build_basic_schema, create_collection, create_index, load_collection
@@ -35,6 +41,8 @@ WAIT_STATES = {"PROVISIONING", "MODIFYING"}
 FAIL_STATES = {"PAUSED", "DELETING", "FAILED"}
 PREFLIGHT_MAX_WAIT_SEC = 60
 IMPORT_POLL_CAP_SEC = 30 * 60
+IMAGE_BATCH_SIZE = 16
+IMAGE_PK_MAX_LENGTH = 512  # absolute paths can be long
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +52,16 @@ def _schema_from_plan(plan_schema: dict[str, Any]) -> CollectionSchema:
     for f in plan_schema["extra_fields"]:
         dt, maxlen = DTYPE_MAP.get(f["type"], (DataType.VARCHAR, 256))
         extras.append((f["name"], dt, maxlen if maxlen is not None else f.get("max_length")))
+    text_field = plan_schema.get("text_field")
+    is_image = text_field is None
     return build_basic_schema(
         primary_field=plan_schema["primary_key"],
-        text_field=plan_schema["text_field"],
+        text_field=text_field,
         vector_field=plan_schema["vector_field"],
         dim=plan_schema["dim"],
         enable_sparse=plan_schema.get("sparse_field") is not None,
         sparse_field=plan_schema.get("sparse_field") or "sparse",
+        primary_max_length=IMAGE_PK_MAX_LENGTH if is_image else 128,
         extra_fields=extras,
     )
 
@@ -265,6 +276,203 @@ def _bulk_import(
         delay = min(delay * 1.5, 30)
 
 
+def _image_collection_setup(
+    plan: dict[str, Any], collect: dict[str, Any]
+) -> tuple[list[dict[str, Any]], str]:
+    """Validate prereqs for the image branch and return (rows, primary_key)."""
+    rows = collect.get("rows") or []
+    if not rows:
+        raise LaunchpadError(
+            "image collection has no rows in collect.json",
+            payload={"hint": "rerun `collect --input <dir>` to populate rows[]"},
+        )
+    pk_field = plan["schema"]["primary_key"]
+    return list(rows), pk_field
+
+
+def _ingest_image_rows(
+    *,
+    client: PyMilvusClient,
+    collection: str,
+    rows: list[dict[str, Any]],
+    pk_field: str,
+    vector_field: str,
+    extra_keys: tuple[str, ...],
+    embedder_fn: Any,
+    out_dir: Path,
+    processed: set[str],
+) -> tuple[list[str], list[dict[str, str]], int]:
+    """Returns (newly_processed_paths, skipped, batches_emitted)."""
+    pending = [r for r in rows if str(r.get("image_path") or "") not in processed]
+    newly_processed: list[str] = []
+    skipped: list[dict[str, str]] = []
+    batches = 0
+    if not pending:
+        return newly_processed, skipped, batches
+
+    for start in range(0, len(pending), IMAGE_BATCH_SIZE):
+        batch = pending[start : start + IMAGE_BATCH_SIZE]
+        paths = [str(r["image_path"]) for r in batch]
+        try:
+            vectors = embedder_fn(paths)
+        except Exception as exc:
+            for p in paths:
+                skipped.append({"image_path": p, "reason": f"batch-embed: {exc}"})
+            logger.warning("image batch failed (%d files): %s", len(paths), exc)
+            continue
+
+        upsert_rows: list[dict[str, Any]] = []
+        for r, v in zip(batch, vectors, strict=True):
+            row: dict[str, Any] = {pk_field: str(r["image_path"]), vector_field: v}
+            for k in extra_keys:
+                if k in r:
+                    row[k] = r[k]
+            upsert_rows.append(row)
+        try:
+            client.upsert(collection_name=collection, data=upsert_rows)
+        except Exception as exc:
+            for p in paths:
+                skipped.append({"image_path": p, "reason": f"upsert: {exc}"})
+            logger.warning("image upsert failed (%d files): %s", len(paths), exc)
+            continue
+        newly_processed.extend(paths)
+        batches += 1
+
+        # Snapshot processed_files after every successful batch so a kill is
+        # resumable. We rewrite execute.json so a partial run is observable.
+        processed.update(paths)
+        snapshot = {
+            "phase": "ingesting",
+            "processed_files": sorted(processed),
+            "skipped_files": skipped,
+        }
+        (out_dir / "execute.json").write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    return newly_processed, skipped, batches
+
+
+def _run_image_execute(
+    *,
+    out_dir: Path,
+    plan: dict[str, Any],
+    ui_port: int,
+    start_ui: bool,
+) -> dict[str, Any]:
+    """Image branch — bypasses chunking, BM25, and bulk-import paths."""
+    collect = json.loads((out_dir / "collect.json").read_text(encoding="utf-8"))
+    rows, pk_field = _image_collection_setup(plan, collect)
+
+    # Pre-flight credentials before touching Milvus.
+    embedding = plan["embedding"]
+    provider = str(embedding["provider"])
+    model = embedding.get("model")
+    device_hint = embedding.get("device_hint")
+    embedder_fn = make_image_embedder(provider, model, device_hint)
+
+    # Resume from existing snapshot if present.
+    processed: set[str] = set()
+    prior_skipped: list[dict[str, str]] = []
+    snap_path = out_dir / "execute.json"
+    if snap_path.exists():
+        try:
+            prior = json.loads(snap_path.read_text(encoding="utf-8"))
+            processed = set(prior.get("processed_files") or [])
+            prior_skipped = list(prior.get("skipped_files") or [])
+        except (json.JSONDecodeError, OSError):
+            processed = set()
+
+    client = MilvusClient(uri=plan["target_uri"])
+    schema = _schema_from_plan(plan["schema"])
+    coll_status = create_collection(client, plan["collection_name"], schema)
+    idx_status = create_index(
+        client,
+        plan["collection_name"],
+        plan["schema"]["vector_field"],
+        index_type=plan["index"]["type"],
+        metric_type=plan["index"]["metric"],
+        params=plan["index"]["params"],
+    )
+    load_collection(client, plan["collection_name"])
+
+    extra_keys = tuple(f["name"] for f in plan["schema"]["extra_fields"])
+    new_processed, skipped, batches = _ingest_image_rows(
+        client=client,
+        collection=plan["collection_name"],
+        rows=rows,
+        pk_field=pk_field,
+        vector_field=plan["schema"]["vector_field"],
+        extra_keys=extra_keys,
+        embedder_fn=embedder_fn,
+        out_dir=out_dir,
+        processed=processed,
+    )
+    skipped = prior_skipped + skipped
+
+    # Smoke text query: encode via CLIP if local, else skip (Voyage text path
+    # would need an extra API call we don't strictly need at this stage).
+    smoke_hits: list[dict[str, Any]] = []
+    smoke_query = "a photograph"
+    if provider == "clip-local":
+        try:
+            qvec = embed_text_with_clip(
+                [smoke_query],
+                model_id=str(model or "ViT-B-32"),
+                device_hint=device_hint,
+            )[0]
+            res = client.search(
+                collection_name=plan["collection_name"],
+                data=[qvec],
+                anns_field=plan["schema"]["vector_field"],
+                limit=1,
+                output_fields=[pk_field],
+            )
+            for batch_res in res or []:
+                for hit in batch_res:
+                    entity = getattr(hit, "entity", None)
+                    pk_val = (
+                        entity.get(pk_field) if entity is not None else hit.get(pk_field)
+                    ) if hasattr(hit, "get") or entity is not None else None
+                    smoke_hits.append(
+                        {
+                            "id": str(pk_val) if pk_val else "",
+                            "score": float(getattr(hit, "score", 0.0) or hit.get("distance", 0.0)),
+                        }
+                    )
+        except Exception as exc:
+            logger.warning("image smoke query failed: %s", exc)
+
+    sidecar_pid = _start_sidecar(out_dir, plan, ui_port) if start_ui else None
+
+    report = {
+        "phase": "complete",
+        "collection_status": coll_status,
+        "index_status": idx_status,
+        "ingest_path": "image-batch",
+        "ingest": {
+            "images_total": len(rows),
+            "images_ingested_this_run": len(new_processed),
+            "images_skipped_this_run": len([s for s in skipped if s not in prior_skipped]),
+            "batches": batches,
+            "provider": provider,
+            "model": model,
+            "device_hint": device_hint,
+        },
+        "processed_files": sorted(processed),
+        "skipped_files": skipped,
+        "smoke_query": smoke_query,
+        "smoke_hits": smoke_hits,
+        "ui_port": ui_port if start_ui else None,
+        "sidecar_pid": sidecar_pid,
+    }
+    snap_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return report
+
+
 def run_execute(
     *,
     out_dir: Path,
@@ -277,6 +485,12 @@ def run_execute(
 
     target = detect_target(plan["target_uri"])
     cluster_id = plan.get("cluster_id")
+
+    # Image branch: short-circuit before any text-flow work.
+    if plan["embedding"].get("modality") == "image":
+        return _run_image_execute(
+            out_dir=out_dir, plan=plan, ui_port=ui_port, start_ui=start_ui
+        )
 
     # Pre-flight when we have a CLI-resolved cluster_id
     preflight: dict[str, Any] | None = None

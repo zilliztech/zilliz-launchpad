@@ -175,25 +175,39 @@ def drop_index(client: MilvusClient, collection: str, field_name: str) -> None:
 def build_basic_schema(
     *,
     primary_field: str = "id",
-    text_field: str = "text",
+    text_field: str | None = "text",
     vector_field: str = "embedding",
     dim: int,
     enable_sparse: bool = False,
     sparse_field: str = "sparse",
+    primary_max_length: int = 128,
     extra_fields: list[tuple[str, DataType, int | None]] | None = None,
 ) -> CollectionSchema:
     """Build a basic schema shared by the plan-generated collection shape.
 
+    `text_field=None` builds a schema without a text column — used by image
+    collections where the primary key carries the file path and there's no
+    indexed natural-language column. `enable_sparse=True` requires text_field.
+
     `extra_fields` is a list of `(name, dtype, max_length_or_none)`.
     """
-    text_field_kwargs: dict[str, Any] = {"max_length": 65535}
-    if enable_sparse:
-        text_field_kwargs["enable_analyzer"] = True
+    if enable_sparse and text_field is None:
+        raise ValueError("enable_sparse=True requires a text_field for the BM25 function input")
+
     fields: list[FieldSchema] = [
-        FieldSchema(name=primary_field, dtype=DataType.VARCHAR, is_primary=True, max_length=128),
-        FieldSchema(name=text_field, dtype=DataType.VARCHAR, **text_field_kwargs),
-        FieldSchema(name=vector_field, dtype=DataType.FLOAT_VECTOR, dim=dim),
+        FieldSchema(
+            name=primary_field,
+            dtype=DataType.VARCHAR,
+            is_primary=True,
+            max_length=primary_max_length,
+        ),
     ]
+    if text_field is not None:
+        text_field_kwargs: dict[str, Any] = {"max_length": 65535}
+        if enable_sparse:
+            text_field_kwargs["enable_analyzer"] = True
+        fields.append(FieldSchema(name=text_field, dtype=DataType.VARCHAR, **text_field_kwargs))
+    fields.append(FieldSchema(name=vector_field, dtype=DataType.FLOAT_VECTOR, dim=dim))
     if enable_sparse:
         fields.append(FieldSchema(name=sparse_field, dtype=DataType.SPARSE_FLOAT_VECTOR))
     for name, dtype, max_length in extra_fields or []:
@@ -202,7 +216,7 @@ def build_basic_schema(
         else:
             fields.append(FieldSchema(name=name, dtype=dtype))
     schema = CollectionSchema(fields=fields, description="zilliz-launchpad collection")
-    if enable_sparse:
+    if enable_sparse and text_field is not None:
         schema.add_function(
             Function(
                 name=f"{text_field}_bm25",

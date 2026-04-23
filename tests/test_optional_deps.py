@@ -28,6 +28,23 @@ def _is_multimodal_module(name: str) -> bool:
     )
 
 
+def _hide_modules(prefixes: tuple[str, ...]) -> dict[str, object]:
+    """Pop matching modules from sys.modules and return them so we can restore.
+
+    Removing torch from sys.modules would corrupt torch's internal state on
+    re-import (it re-runs module init, which fails because docstrings are
+    already set). The caller MUST restore the dict after the test.
+    """
+
+    def matches(name: str) -> bool:
+        return any(name == p or name.startswith(p + ".") for p in prefixes)
+
+    saved = {k: sys.modules[k] for k in list(sys.modules) if matches(k)}
+    for k in saved:
+        del sys.modules[k]
+    return saved
+
+
 def test_require_multimodal_raises_envelope_when_missing(monkeypatch: pytest.MonkeyPatch):
     """Simulate torch / open_clip not being installed."""
     real_import = builtins.__import__
@@ -37,15 +54,15 @@ def test_require_multimodal_raises_envelope_when_missing(monkeypatch: pytest.Mon
             raise ModuleNotFoundError(f"No module named '{name}'")
         return real_import(name, *args, **kwargs)
 
-    for mod in list(sys.modules):
-        if _is_multimodal_module(mod):
-            del sys.modules[mod]
+    saved = _hide_modules(("torch", "open_clip"))
     monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    with pytest.raises(MissingDependencyError) as exc:
-        require_multimodal()
-    assert exc.value.payload["feature"] == "image-search"
-    assert exc.value.payload["install_hint"] == MULTIMODAL_INSTALL_HINT
+    try:
+        with pytest.raises(MissingDependencyError) as exc:
+            require_multimodal()
+        assert exc.value.payload["feature"] == "image-search"
+        assert exc.value.payload["install_hint"] == MULTIMODAL_INSTALL_HINT
+    finally:
+        sys.modules.update(saved)
 
 
 def test_detect_device_hint_returns_cpu_without_torch(monkeypatch: pytest.MonkeyPatch):
@@ -56,9 +73,9 @@ def test_detect_device_hint_returns_cpu_without_torch(monkeypatch: pytest.Monkey
             raise ModuleNotFoundError(f"No module named '{name}'")
         return real_import(name, *args, **kwargs)
 
-    for mod in list(sys.modules):
-        if mod == "torch" or mod.startswith("torch."):
-            del sys.modules[mod]
+    saved = _hide_modules(("torch",))
     monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    assert detect_device_hint() == "cpu"
+    try:
+        assert detect_device_hint() == "cpu"
+    finally:
+        sys.modules.update(saved)
