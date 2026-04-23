@@ -1,29 +1,29 @@
 # zilliz-launchpad
 
-> **From a sample document to a scored, production-deployed search app on Milvus / Zilliz Cloud — in minutes.**
-> An opinionated, AI-guided scaffold delivered as an agent skill.
+From a sample document to a production-deployed search app on Milvus / Zilliz Cloud — in minutes.
+An AI-guided scaffold delivered as an agent skill. 
 
-If you've never touched Milvus, the launchpad picks every default for you (schema, embedding model, index, hybrid setup), hands you a working Next.js search UI, scores retrieval quality with a real eval, and promotes the whole thing to Zilliz Cloud. If you're already a Milvus user but tired of writing the same boilerplate for every new collection, it collapses the busywork into six idempotent CLI steps.
+Whether you're new to Milvus or just tired of boilerplate — pick a file, run six steps, ship.
 
 ## What you get
 
-After running the six phases against a sample file, you have:
-
-- A **collection** in Milvus or Zilliz Cloud, schema designed from your data
-- **Vector + sparse fields** wired up, with a chosen embedding model (OpenAI / Voyage / Cohere / BYOM)
-- A **deterministic plan artifact** (`plan.md`) explaining every decision — useful for review and reproducibility
-- A **Next.js demo UI** at `http://localhost:3000` that runs hybrid search against your data
-- An **eval report** (`eval_report.md`) with recall@10, p50/p95/p99 latency, and optional RAG-quality metrics — plus a decision table when you compare plan variants
-- A **Zilliz Cloud deployment** with observability pointers (Prometheus for Standalone, Grafana for Cloud), recorded in `deploy.json` so reruns are resumable
+| Artifact | Description |
+|----------|-------------|
+| Milvus Collection | Schema auto-designed from your data |
+| Vector + sparse fields | OpenAI / Voyage / Cohere / BYOM |
+| `plan.md` | Every decision recorded — reviewable and reproducible |
+| Next.js Demo UI | Hybrid search at `localhost:3000`, ready out of the box |
+| `eval_report.md` | recall@10, p50/p95/p99 latency, optional RAG quality metrics |
+| `deploy.json` | Zilliz Cloud deployment record, resumable on rerun |
 
 ## Requirements
 
-- **An agent that supports skills** — e.g., Claude Code, Copilot CLI, Gemini CLI, or any agent compatible with the [`skills`](https://github.com/superagent-ai/skills) installer
-- **Python ≥ 3.11** and [`uv`](https://github.com/astral-sh/uv)
-- **Node.js ≥ 18** and **pnpm** (for the demo UI)
-- **Docker** (for local Milvus Standalone) **or** a Zilliz Cloud account
-- An API key from one of: **OpenAI** · **Voyage** · **Cohere** · **Zilliz BYOM**
-- Optional: [`zilliz` CLI](https://github.com/zilliztech/zilliz-cli) — only needed for Cloud auto-discovery and bulk import
+- **Agent** — Claude Code, Copilot CLI, Gemini CLI, or any [`skills`](https://github.com/superagent-ai/skills)-compatible agent
+- **Python ≥ 3.11** + [`uv`](https://github.com/astral-sh/uv)
+- **Node.js ≥ 18** + pnpm
+- **Docker** (local Standalone) or a Zilliz Cloud account
+- **API key** — OpenAI, Voyage, Cohere, or Zilliz BYOM
+- **Optional** — [`zilliz` CLI](https://github.com/zilliztech/zilliz-cli) for Cloud auto-discovery and bulk import
 
 ## Install
 
