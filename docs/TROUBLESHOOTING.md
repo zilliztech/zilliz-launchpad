@@ -36,6 +36,33 @@ The requested phase needs an API key that isn't set. Follow the `export_hint` in
 export OPENAI_API_KEY=sk-...
 ```
 
+## `{"code": "missing_dependency", "feature": "image-search", ...}`
+
+You're running an image-search phase but the optional `[multimodal]` extra isn't installed. The error envelope's `install_hint` tells you what to run:
+
+```bash
+uv pip install -e '.[multimodal]'
+```
+
+This pulls `torch` (~1 GB) and `open-clip-torch` (~150 MB checkpoint at first model load). The base text-only flow works without it.
+
+## Apple Photos exports give you HEIC files
+
+`collect --input ./photos/` only accepts `.jpg/.jpeg/.png/.webp/.gif`. HEIC needs a one-line conversion. macOS:
+
+```bash
+# Convert in-place to JPEG; keeps EXIF
+sips -s format jpeg ./photos/*.HEIC --out ./photos/
+rm ./photos/*.HEIC
+```
+
+Linux (with `libheif-tools`):
+
+```bash
+for f in ./photos/*.heic; do heif-convert "$f" "${f%.heic}.jpg"; done
+rm ./photos/*.heic
+```
+
 ## `{"code": "schema_conflict", ...}`
 
 You're trying to create a collection with a different schema than one that already exists. Either:
