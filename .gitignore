@@ -31,5 +31,5 @@ skills/zilliz-launchpad/scripts/volumes/
 .idea/
 .vscode/
 
-.openspec/
+openspec/
 .claude/
