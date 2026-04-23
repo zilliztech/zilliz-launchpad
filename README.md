@@ -10,9 +10,9 @@ Whether you're new to Milvus or just tired of boilerplate — pick a file, run s
 | Artifact | Description |
 |----------|-------------|
 | Milvus Collection | Schema auto-designed from your data |
-| Vector + sparse fields | OpenAI / Voyage / Cohere / BYOM |
+| Vector + sparse fields | OpenAI / Voyage / Cohere / BYOM (text); CLIP / Voyage multimodal (image) |
 | `plan.md` | Every decision recorded — reviewable and reproducible |
-| Next.js Demo UI | Hybrid search at `localhost:3000`, ready out of the box |
+| Next.js Demo UI | Hybrid search list **or** thumbnail gallery (auto-detected) at `localhost:3000` |
 | `eval_report.md` | recall@10, p50/p95/p99 latency, optional RAG quality metrics |
 | `deploy.json` | Zilliz Cloud deployment record, resumable on rerun |
 
@@ -113,6 +113,14 @@ Output (`collect.json`, abbreviated):
 
 > **For Milvus veterans:** this is where you'd normally hand-write a `CollectionSchema`. Skip it.
 
+> **Image search?** Point `--input` at a directory of images (`.jpg/.png/.webp/.gif`):
+> ```bash
+> uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py collect --input ./photos/
+> uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py configure \
+>     --use-case image-search --dataset-size 64000 --deployment local-standalone
+> ```
+> Phase 1 walks the directory, reads EXIF, encodes a thumbnail per image. Phase 3 then picks `clip-local` (open-source ViT-B/32, runs on CPU/MPS/CUDA, no API key) by default — install the optional extra first: `uv pip install -e '.[multimodal]'`. The Next.js UI auto-switches to a thumbnail gallery. See [issue #14](https://github.com/zilliztech/zilliz-launchpad/issues/14) for the MVP scope.
+
 ---
 
 ### Phase 2 — Configure: capture your intent
@@ -128,7 +136,7 @@ uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py configure \
 
 | Flag | Common values |
 | --- | --- |
-| `--use-case` | `rag`, `semantic-search`, `hybrid-search`, `recommendation` |
+| `--use-case` | `rag`, `semantic-search`, `hybrid-search`, `recommendation`, `image-search` |
 | `--dataset-size` | row-count estimate, drives index choice |
 | `--deployment` | `local-standalone`, `zilliz-serverless`, `zilliz-dedicated`, `zilliz-byoc` |
 
@@ -355,6 +363,19 @@ Skill writes a `variants.yaml` with the two overrides, runs `evaluate --qrels qr
 > *"The local eval looks good. Promote this run to a new Zilliz Cloud serverless cluster."*
 
 Skill confirms the projected cost, runs `deploy --create --confirm`, streams `zilliz cluster describe` progress to stderr while the cluster comes up, and tails `deploy.json` as the state machine advances. If anything fails mid-deploy, a rerun with `deploy --cluster-id <id>` resumes from the last checkpoint — the skill reads `deploy.json` to know which steps are already done.
+
+### 10. Index my photos for text-to-image search
+
+> *"I have ~5,000 photos in `~/Pictures/library`. Make them searchable by typing — I want to type 'sunset' and see sunsets."*
+
+Skill installs the `[multimodal]` extra if it's missing, then runs:
+
+- `collect --input ~/Pictures/library` — walks the directory, reads dimensions / EXIF / capped 256 px thumbnails per image
+- `configure --use-case image-search --dataset-size 5000 --deployment local-standalone` — forces hybrid off, picks `clip-local` (ViT-B/32, 512 dim) by default
+- `plan` — schema is dense-only with `image_path` as the primary key
+- `execute` — downloads CLIP weights once (~150 MB), batches images through the encoder, ingests; the demo UI auto-detects the modality and renders a thumbnail grid instead of a text list
+
+For Phase 5 add `--judge-llm openai:gpt-4o-mini` to derive captioned eval queries; cached to `derived_image_queries.jsonl` so reruns don't re-spend tokens.
 
 ## Going to Zilliz Cloud
 
