@@ -7,11 +7,31 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..optional_deps import detect_device_hint
 from ..profile import load_profile
 
-DEFAULT_EMBEDDING = {"provider": "openai", "model": "text-embedding-3-small", "dim": 1536}
+DEFAULT_EMBEDDING = {
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "dim": 1536,
+    "modality": "text",
+}
+DEFAULT_IMAGE_EMBEDDING = {
+    "provider": "clip-local",
+    "model": "ViT-B-32",
+    "dim": 512,
+    "modality": "image",
+}
+VOYAGE_MULTIMODAL_EMBEDDING = {
+    "provider": "voyage",
+    "model": "voyage-multimodal-3",
+    "dim": 1024,
+    "modality": "image",
+}
 CLOUD_TARGETS = {"zilliz-serverless", "zilliz-dedicated", "zilliz-byoc"}
 DEFAULT_BULK_IMPORT_THRESHOLD = 100_000
+IMAGE_USE_CASES = {"image-search"}
+IMAGE_DATA_SHAPE = "image_dir"
 
 
 @dataclass
@@ -102,7 +122,8 @@ def _build_schema(
 ) -> dict[str, Any]:
     pk = collect["suggested_primary_key"]
     text = collect["suggested_text_field"]
-    extra = [f for f in collect["fields"] if f["name"] not in (pk, text)]
+    skip = {pk, text} if text else {pk}
+    extra = [f for f in collect["fields"] if f["name"] not in skip]
     return {
         "primary_key": pk,
         "text_field": text,
@@ -120,31 +141,89 @@ def _build_schema(
     }
 
 
+def _pick_image_provider(configure: dict[str, Any]) -> dict[str, Any]:
+    """Default to CLIP-local; honor a string or {provider} override."""
+    pref = configure.get("embedding_preference")
+    if pref is None or pref == "auto":
+        embedding = dict(DEFAULT_IMAGE_EMBEDDING)
+    elif isinstance(pref, str):
+        if pref == "voyage-multimodal-3":
+            embedding = dict(VOYAGE_MULTIMODAL_EMBEDDING)
+        elif pref in ("clip-local", "ViT-B-32"):
+            embedding = dict(DEFAULT_IMAGE_EMBEDDING)
+        else:
+            embedding = dict(DEFAULT_IMAGE_EMBEDDING)
+            embedding["model"] = pref
+    elif isinstance(pref, dict):
+        provider = pref.get("provider", "clip-local")
+        if provider == "voyage":
+            embedding = dict(VOYAGE_MULTIMODAL_EMBEDDING)
+        else:
+            embedding = dict(DEFAULT_IMAGE_EMBEDDING)
+        embedding.update({k: v for k, v in pref.items() if v is not None})
+        embedding["modality"] = "image"
+    else:
+        embedding = dict(DEFAULT_IMAGE_EMBEDDING)
+
+    embedding["device_hint"] = detect_device_hint()
+    return embedding
+
+
+def _pick_text_provider(configure: dict[str, Any]) -> dict[str, Any]:
+    embedding = dict(DEFAULT_EMBEDDING)
+    pref = configure.get("embedding_preference")
+    if isinstance(pref, dict):
+        embedding.update({k: v for k, v in pref.items() if v is not None})
+    embedding.setdefault("modality", "text")
+    return embedding
+
+
+def _is_image_profile(collect: dict[str, Any], configure: dict[str, Any]) -> bool:
+    return (
+        collect.get("data_shape") == IMAGE_DATA_SHAPE
+        or configure.get("use_case") in IMAGE_USE_CASES
+    )
+
+
 def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
     collect = profile["collect"]
     configure = profile["configure"]
-    embedding = dict(DEFAULT_EMBEDDING)
-    if configure.get("embedding_preference"):
-        embedding.update(
-            {k: v for k, v in configure["embedding_preference"].items() if v is not None}
+    is_image = _is_image_profile(collect, configure)
+
+    if is_image:
+        embedding = _pick_image_provider(configure)
+        sparse = False
+        reranker = None
+    else:
+        embedding = _pick_text_provider(configure)
+        sparse = _pick_sparse(configure["use_case"], configure.get("hybrid_preference", "auto"))
+        reranker = _pick_reranker(
+            configure.get("reranker_preference", "auto"), configure["use_case"]
         )
 
-    sparse = _pick_sparse(configure["use_case"], configure.get("hybrid_preference", "auto"))
     index = _pick_index(configure["dataset_size"], configure["deployment_target"])
-    reranker = _pick_reranker(configure.get("reranker_preference", "auto"), configure["use_case"])
     schema = _build_schema(collect, embedding, sparse)
     target_uri = configure.get("target_uri") or _target_uri(configure["deployment_target"])
 
     rationale = [
         f"Dataset size {configure['dataset_size']} → index {index.type} {index.params}",
-        f"Use case '{configure['use_case']}' + hybrid preference "
-        f"'{configure.get('hybrid_preference', 'auto')}' → sparse={sparse}",
         f"Deployment '{configure['deployment_target']}' → URI {target_uri}",
         (
             f"Embedding provider '{embedding['provider']}' "
             f"model '{embedding['model']}' (dim {embedding['dim']})"
         ),
     ]
+    if is_image:
+        rationale.append(
+            f"Image collection ({collect.get('record_count_estimate', '?')} images) "
+            f"→ sparse field disabled, reranker none, device_hint={embedding['device_hint']}"
+        )
+    else:
+        rationale.insert(
+            1,
+            f"Use case '{configure['use_case']}' + hybrid preference "
+            f"'{configure.get('hybrid_preference', 'auto')}' → sparse={sparse}",
+        )
     if reranker:
         rationale.append(f"Reranker '{reranker}' enabled per preference")
 
@@ -165,6 +244,31 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
 
 
 def _plan_to_markdown(plan: PlanSpec) -> str:
+    is_image = plan.embedding.get("modality") == "image"
+    text_field_line = (
+        f"- Text field: `{plan.schema['text_field']}`"
+        if plan.schema["text_field"]
+        else "- Text field: (none — image collection)"
+    )
+    sparse_line = (
+        f"- Sparse field: `{plan.schema['sparse_field']}`"
+        if plan.sparse_enabled
+        else (
+            "- Sparse field: disabled (image collection)"
+            if is_image
+            else "- Sparse: disabled"
+        )
+    )
+    embedding_lines = [
+        "## Embedding",
+        f"- Provider: `{plan.embedding['provider']}`",
+        f"- Model: `{plan.embedding['model']}`",
+        f"- Dim: {plan.embedding['dim']}",
+        f"- Modality: `{plan.embedding.get('modality', 'text')}`",
+    ]
+    if is_image:
+        embedding_lines.append(f"- Device hint: `{plan.embedding.get('device_hint', 'cpu')}`")
+
     lines = [
         "# Launchpad Plan",
         "",
@@ -174,19 +278,12 @@ def _plan_to_markdown(plan: PlanSpec) -> str:
         "",
         "## Schema",
         f"- Primary key: `{plan.schema['primary_key']}`",
-        f"- Text field: `{plan.schema['text_field']}`",
+        text_field_line,
         f"- Vector field: `{plan.schema['vector_field']}` (dim {plan.schema['dim']})",
-        (
-            f"- Sparse field: `{plan.schema['sparse_field']}`"
-            if plan.sparse_enabled
-            else "- Sparse: disabled"
-        ),
+        sparse_line,
         f"- Extra fields: {', '.join(f['name'] for f in plan.schema['extra_fields']) or '(none)'}",
         "",
-        "## Embedding",
-        f"- Provider: `{plan.embedding['provider']}`",
-        f"- Model: `{plan.embedding['model']}`",
-        f"- Dim: {plan.embedding['dim']}",
+        *embedding_lines,
         "",
         "## Index",
         f"- Type: `{plan.index.type}`",

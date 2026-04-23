@@ -13,7 +13,7 @@
       "properties": {
         "source_path": { "type": ["string", "null"] },
         "source_sample": { "type": ["string", "null"] },
-        "data_shape": { "enum": ["jsonl", "csv", "text"] },
+        "data_shape": { "enum": ["jsonl", "csv", "text", "image_dir"] },
         "record_count_estimate": { "type": ["integer", "null"], "minimum": 0 },
         "fields": {
           "type": "array",
@@ -30,7 +30,13 @@
           }
         },
         "suggested_primary_key": { "type": "string" },
-        "suggested_text_field": { "type": "string" }
+        "suggested_text_field": { "type": ["string", "null"] },
+        "rows": {
+          "type": "array",
+          "description": "Per-record row data (image_dir only). Text shapes keep this absent.",
+          "items": { "type": "object" }
+        },
+        "thumbnails_included": { "type": "boolean" }
       }
     },
     "configure": {
@@ -38,7 +44,9 @@
       "required": ["use_case", "query_patterns", "dataset_size", "deployment_target"],
       "additionalProperties": false,
       "properties": {
-        "use_case": { "enum": ["rag", "semantic-search", "recommendations"] },
+        "use_case": {
+          "enum": ["rag", "semantic-search", "hybrid-search", "recommendation", "image-search"]
+        },
         "query_patterns": {
           "type": "array",
           "minItems": 1,
@@ -63,17 +71,28 @@
         },
         "latency_target_ms": { "type": ["integer", "null"], "minimum": 1 },
         "embedding_preference": {
-          "type": ["object", "null"],
-          "required": ["provider"],
-          "additionalProperties": false,
-          "properties": {
-            "provider": { "enum": ["openai", "voyage", "cohere", "zilliz-byom"] },
-            "model": { "type": ["string", "null"] },
-            "dim": { "type": ["integer", "null"] }
-          }
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "description": "Shorthand model id, e.g. 'voyage-multimodal-3'." },
+            {
+              "type": "object",
+              "required": ["provider"],
+              "additionalProperties": false,
+              "properties": {
+                "provider": {
+                  "enum": ["openai", "voyage", "cohere", "zilliz-byom", "clip-local"]
+                },
+                "model": { "type": ["string", "null"] },
+                "dim": { "type": ["integer", "null"] }
+              }
+            }
+          ]
         },
         "hybrid_preference": {
-          "enum": ["auto", "dense", "sparse", "hybrid"],
+          "oneOf": [
+            { "enum": ["auto", "dense", "sparse", "hybrid"] },
+            { "type": "boolean" }
+          ],
           "default": "auto"
         },
         "reranker_preference": {
