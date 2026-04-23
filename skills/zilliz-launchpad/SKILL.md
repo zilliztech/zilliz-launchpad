@@ -78,7 +78,7 @@ Load only the references you need for the current phase. Do not prefetch all of 
 | ---   | --- |
 | 1 Collect    | `knowledge/document_processing.md` |
 | 2 Configure  | `knowledge/rag_templates.md`, `deploy-*.md` (match the user's target) |
-| 3 Plan       | `knowledge/dense_embedding_models.md`, `knowledge/sparse_embedding_models.md`, `knowledge/index_tuning.md`, `knowledge/schema_design.md`, `knowledge/hybrid_search_guide.md`, `knowledge/reranker_guide.md` |
+| 3 Plan       | `knowledge/dense_embedding_models.md`, `knowledge/sparse_embedding_models.md`, `knowledge/index_tuning.md`, `knowledge/schema_design.md`, `knowledge/hybrid_search_guide.md`, `knowledge/reranker_guide.md`, `knowledge/image_embedding_models.md` (image-search only) |
 | 4 Execute    | `cli-reference.md` |
 | 5 Evaluate   | `knowledge/evaluation_guide.md` |
 | 6 Deploy     | `observability/metrics.md`, `observability/query-analysis.md`, `deploy-*.md` (match the target) |
@@ -148,7 +148,7 @@ Known codes and how to react:
 - No Milvus Lite (only Standalone + Zilliz Cloud)
 - No MCP server (the CLI is designed so one can be added later without touching `lib/`)
 - No on-device embedding — API providers only
-- No multi-modal data — text only
+- No image-to-image / video — text-to-image only
 - No IDE integration beyond Claude Code
 
 If the user asks for any of the above, politely say it's on the roadmap and keep scope tight.
