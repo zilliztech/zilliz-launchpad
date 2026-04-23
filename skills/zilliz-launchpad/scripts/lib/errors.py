@@ -163,6 +163,17 @@ class BulkImportFailedError(LaunchpadError):
         )
 
 
+class MissingDependencyError(LaunchpadError):
+    code = "missing_dependency"
+
+    def __init__(self, *, feature: str, install_hint: str) -> None:
+        super().__init__(
+            f"Optional dependency required for '{feature}' is not installed",
+            feature=feature,
+            install_hint=install_hint,
+        )
+
+
 class DestructiveWithoutConfirmError(LaunchpadError):
     code = "destructive_without_confirm"
 

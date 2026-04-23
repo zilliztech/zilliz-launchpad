@@ -130,6 +130,7 @@ Known codes and how to react:
 | code | action |
 | --- | --- |
 | `missing_credential`  | prompt the user for the value; ask them to `export` it; retry |
+| `missing_dependency`  | optional extra not installed (e.g. image-search needs `[multimodal]`); surface `install_hint` verbatim and ask the user to install |
 | `schema_conflict`     | a collection exists with a different schema; offer to drop or to rename the plan's `collection_name` |
 | `sparse_unavailable`  | the user picked hybrid/sparse but the collection was built without sparse; offer to rebuild |
 | `invalid_profile`     | Phase 3 got a malformed input; go back to Configure |
