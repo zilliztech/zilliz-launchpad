@@ -1,18 +1,20 @@
 # zilliz-launchpad
 
-> **From a sample document to a running search app on Milvus / Zilliz Cloud — in minutes.**
+> **From a sample document to a scored, production-deployed search app on Milvus / Zilliz Cloud — in minutes.**
 > An opinionated, AI-guided scaffold delivered as an agent skill.
 
-If you've never touched Milvus, the launchpad picks every default for you (schema, embedding model, index, hybrid setup) and hands you a working Next.js search UI. If you're already a Milvus user but tired of writing the same boilerplate for every new collection, it collapses the busywork into four idempotent CLI steps.
+If you've never touched Milvus, the launchpad picks every default for you (schema, embedding model, index, hybrid setup), hands you a working Next.js search UI, scores retrieval quality with a real eval, and promotes the whole thing to Zilliz Cloud. If you're already a Milvus user but tired of writing the same boilerplate for every new collection, it collapses the busywork into six idempotent CLI steps.
 
 ## What you get
 
-After running the four phases against a sample file, you have:
+After running the six phases against a sample file, you have:
 
 - A **collection** in Milvus or Zilliz Cloud, schema designed from your data
 - **Vector + sparse fields** wired up, with a chosen embedding model (OpenAI / Voyage / Cohere / BYOM)
 - A **deterministic plan artifact** (`plan.md`) explaining every decision — useful for review and reproducibility
 - A **Next.js demo UI** at `http://localhost:3000` that runs hybrid search against your data
+- An **eval report** (`eval_report.md`) with recall@10, p50/p95/p99 latency, and optional RAG-quality metrics — plus a decision table when you compare plan variants
+- A **Zilliz Cloud deployment** with observability pointers (Prometheus for Standalone, Grafana for Cloud), recorded in `deploy.json` so reruns are resumable
 
 ## Requirements
 
@@ -31,7 +33,7 @@ The launchpad ships as an agent skill. Install it with the [`skills`](https://gi
 npx skills add zilliztech/zilliz-launchpad
 ```
 
-Once installed, open your agent in this repo and say something like *"use zilliz-launchpad to index this file"* — the skill drives the four phases end-to-end, installing Python deps, bringing up Milvus, and prompting for any missing API keys as it goes.
+Once installed, open your agent in this repo and say something like *"use zilliz-launchpad to index this file"* — the skill drives the six phases end-to-end (stopping at Phase 4 by default; Phases 5 and 6 kick in when you ask), installing Python deps, bringing up Milvus, and prompting for any missing API keys as it goes.
 
 ### Install options
 
@@ -68,14 +70,16 @@ export OPENAI_API_KEY=<your-key>
 
 If you plan to drive the CLI directly without an agent, run all three — the Walkthrough below assumes they're done.
 
-## Walkthrough — the four phases
+## Walkthrough — the six phases
 
-The launchpad is organized as four CLI subcommands. Each writes a single artifact to `skills/zilliz-launchpad/scripts/runs/<utc-timestamp>/`. You can rerun any phase; nothing is destructive until Phase 4 actually touches Milvus.
+The launchpad is organized as six CLI subcommands. Each writes a single artifact to `skills/zilliz-launchpad/scripts/runs/<utc-timestamp>/`. You can rerun any phase; nothing is destructive until Phase 4 touches Milvus, and Phase 6 is gated behind an explicit `--confirm` before it creates any Cloud resources.
 
 ```
-collect ──▶ configure ──▶ plan ──▶ execute ──▶ demo UI
-                                       │
-                                       └─ Milvus collection + ingested data
+collect ──▶ configure ──▶ plan ──▶ execute ──▶ evaluate ──▶ deploy
+                                       │           │           │
+                                       │           │           └─ Zilliz Cloud + deploy.json
+                                       │           └─ eval_report.{json,md}
+                                       └─ Milvus collection + demo UI
 ```
 
 We'll use the bundled `movies` sample (20 short fictional plot summaries) throughout.
@@ -207,15 +211,94 @@ pnpm dev
 
 A minimal Next.js app that calls a local `/api/search` route, which in turn hits your Milvus collection. Uses the latest run directory automatically. Hot-reload friendly — restyle it however you like.
 
+---
+
+### Phase 5 — Evaluate: score retrieval, latency, RAG quality
+
+Runs a query set against the live collection and writes `eval_report.{json,md}`. Three query-set tiers — pick whichever matches the labels you have:
+
+```bash
+# Derived smoke eval: no labels required, samples 25 docs from your corpus
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py evaluate
+
+# Labelled eval: recall@10, MRR@10, NDCG@10
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py evaluate --qrels qrels.jsonl
+
+# Opt-in RAG quality via ragas (needs a generator-model API key)
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py evaluate \
+    --qrels qrels.jsonl --judge-llm openai:gpt-4o-mini
+```
+
+Example `eval_report.md`:
+
+```markdown
+# Evaluation Report — 2026-04-23T10-15-02Z-execute
+
+- Query count: 25
+- Derived query set: **true**
+
+## Decision table
+
+| variant | recall@10 | p95 (ms) | faithfulness | cost/query |
+| --- | --- | --- | --- | --- |
+| base | 0.920 | 42.7 | — | — |
+
+> Note: queries were derived from the corpus...
+```
+
+**Comparison mode** — re-run the same query set against alternative plan variants (swap embedding model, index params, hybrid on/off, reranker on/off) and get a decision table. Capped at 6 variants by default:
+
+```bash
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py evaluate \
+    --qrels qrels.jsonl --compare variants.yaml
+```
+
+```yaml
+# variants.yaml
+variants:
+  - name: small-m
+    overrides: { index: { params: { M: 8 } } }
+  - name: voyage
+    overrides: { embedding: { model: voyage-3 } }
+  - name: no-hybrid
+    overrides: { hybrid: false }
+```
+
+See [`skills/zilliz-launchpad/references/knowledge/evaluation_guide.md`](skills/zilliz-launchpad/references/knowledge/evaluation_guide.md) for the full metric contract.
+
+---
+
+### Phase 6 — Deploy: promote to Zilliz Cloud
+
+Recreates the plan's collection + index on a Zilliz Cloud cluster, ingests data (bulk import above the plan's threshold, client-side below), and writes `deploy.json` with observability pointers and a resumable state machine. Snapshots after every transition, so a rerun picks up where a failure left off.
+
+```bash
+# Target an existing cluster
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py deploy --cluster-id <id>
+
+# Or provision a new one — --confirm is required because this bills real money
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py deploy --create --confirm
+```
+
+What it does:
+
+1. **Preflight** — checks the `zilliz` CLI is installed + authenticated (`zilliz auth whoami`), and when targeting an existing cluster, verifies it's `RUNNING`
+2. **Provision** (with `--create`) — calls `zilliz cluster create` with plan/region from `configure.json`, polls `zilliz cluster describe` with exponential backoff until `RUNNING`
+3. **Collection + index** — reuses Phase 4's idempotent `create_collection` + `create_index`; surfaces `schema_conflict` if an incompatible collection already exists on the cluster
+4. **Ingest** — routes through `zilliz import create` for corpora above the plan's `bulk_import_threshold` (default 100k), falls back to client-side upsert if bulk fails
+5. **Observability** — records the Grafana dashboard URL (from `cluster describe`) in `deploy.json.observability.grafana_dashboard` and appends a post-ingest snapshot to `observability.json`
+
+`deploy.json` carries the fixed schema the spec guarantees: `cluster_id`, `cluster_uri`, `token_source`, `collection_name`, `ingest_mode`, `ingest_row_count`, `ingest_status`, `observability`, `timestamps`. If Phase 6 stops mid-run (cluster provisioned, ingest failing), a rerun with `--cluster-id <id>` skips the already-ready steps and retries only what's left.
+
 ## Example prompts
 
-The CLI is the seam, but day-to-day you'll talk to the skill in natural language inside your agent. Here are concrete prompts that map cleanly to the four phases — each one shows what the skill runs under the hood.
+The CLI is the seam, but day-to-day you'll talk to the skill in natural language inside your agent. Here are concrete prompts that map cleanly to the six phases — each one shows what the skill runs under the hood.
 
 ### 1. First time — just run the bundled sample
 
 > *"Use zilliz-launchpad with the bundled `movies` sample so I can see the whole flow end-to-end."*
 
-Skill runs all four phases against `sample_data/movies.jsonl` (`--use-case rag --dataset-size 20 --deployment local-standalone`) and starts the demo UI. **Best first invocation** — proves your environment is wired before you point it at real data.
+Skill runs Phases 1–4 against `sample_data/movies.jsonl` (`--use-case rag --dataset-size 20 --deployment local-standalone`) and starts the demo UI. **Best first invocation** — proves your environment is wired before you point it at real data. Once you've clicked around the UI, ask *"now run Phase 5 in derived mode"* for a quick latency+recall smoke.
 
 ### 2. RAG over your own JSONL
 
@@ -261,25 +344,53 @@ Skill reuses the previous run dir's plan (preserving schema) and runs only `exec
 
 Skill parses the JSON error envelope on stderr and offers two paths: drop the existing collection (destructive — confirms first), or change `collection_name` in `plan.json` and rerun. **The general pattern**: every CLI error code in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) maps to a remediation the skill knows how to drive — so when something goes red, just paste the error back into the conversation.
 
-## Using Zilliz Cloud instead of local Milvus
+### 8. Compare embedding models before committing
 
-Two changes vs. the local flow:
+> *"I have `qrels.jsonl` with 50 labelled queries. Before I commit to an embedding model, run Phase 5 with `voyage-3` and `text-embedding-3-small` side-by-side."*
 
-1. Install the [`zilliz` CLI](https://github.com/zilliztech/zilliz-cli), run `zilliz auth login` once. Without it the Cloud path still works — you just paste URI + token manually.
-2. Pass `--deployment zilliz-serverless` (or `zilliz-dedicated` / `zilliz-byoc`) in Phase 2:
+Skill writes a `variants.yaml` with the two overrides, runs `evaluate --qrels qrels.jsonl --compare variants.yaml`, and shows the resulting decision table (recall@10, p95, faithfulness per variant). **Use this whenever you're about to change a plan axis and want signal, not vibes.**
+
+### 9. Promote the local prototype to Cloud
+
+> *"The local eval looks good. Promote this run to a new Zilliz Cloud serverless cluster."*
+
+Skill confirms the projected cost, runs `deploy --create --confirm`, streams `zilliz cluster describe` progress to stderr while the cluster comes up, and tails `deploy.json` as the state machine advances. If anything fails mid-deploy, a rerun with `deploy --cluster-id <id>` resumes from the last checkpoint — the skill reads `deploy.json` to know which steps are already done.
+
+## Going to Zilliz Cloud
+
+There are two patterns — pick based on whether you want to iterate locally first.
+
+### Pattern A — prototype locally, promote via Phase 6 (recommended)
+
+Run Phases 1–5 against local Standalone, then `deploy` to Cloud once the eval looks good:
+
+```bash
+# Phases 1–4 against local Milvus (--deployment local-standalone)
+# Phase 5 on local to sanity-check recall + latency
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py evaluate --qrels qrels.jsonl
+
+# Phase 6 promotes to Cloud. --create provisions a new cluster; --cluster-id targets existing.
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py deploy --create --confirm
+```
+
+Phase 6 requires the [`zilliz` CLI](https://github.com/zilliztech/zilliz-cli) (≥ 0.3.0) on PATH with `zilliz auth login` done. Cluster plan (Serverless / Standard / Enterprise) and region are taken from `configure.json`.
+
+### Pattern B — target Cloud from the start
+
+Skip local Standalone entirely by setting the Cloud target in Phase 2:
 
 ```bash
 uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py configure \
     --use-case rag --dataset-size 500000 --deployment zilliz-serverless
 ```
 
-With the CLI on PATH, the launchpad will:
+With the `zilliz` CLI on PATH, the launchpad will:
 
 - Discover your clusters (`zilliz cluster list`) and write `cluster_id` into `configure.json`
 - Pre-flight the cluster state (`zilliz cluster describe`) before Phase 4 ingests anything
-- Route ingestion through `zilliz import create` for corpora above 100k rows
+- Route ingestion through `zilliz import create` for corpora above the plan's `bulk_import_threshold` (default 100k rows)
 
-Without the CLI, export `ZILLIZ_TOKEN` directly and Phase 4 falls back to client-side upsert.
+Without the CLI, export `ZILLIZ_TOKEN` directly and Phase 4 falls back to client-side upsert. Phase 6's `--create` path requires the CLI — there's no paste-the-token fallback for cluster provisioning.
 
 ## Troubleshooting
 
