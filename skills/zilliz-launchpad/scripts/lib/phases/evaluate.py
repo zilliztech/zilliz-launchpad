@@ -17,10 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from ..client import Backend, MilvusClient, detect_target
-from ..embeddings import make_embedder
+from ..embeddings import embed_text_with_clip, make_embedder
 from ..errors import (
     BackendUnsupportedError,
     InvalidProfileError,
+    JudgeUnavailableError,
     QrelsMissingError,
 )
 from ..evaluator import (
@@ -33,7 +34,11 @@ from ..evaluator import (
 )
 from ..run_dir import load_plan, preflight_execute_artifact
 from ..search import search_dense, search_hybrid
+from ..vision_judge import caption_images, is_vision_capable
 from .execute import _iter_documents
+
+DERIVED_IMAGE_QUERIES_FILE = "derived_image_queries.jsonl"
+_DERIVED_IMAGE_SAMPLE_SIZE = 12  # vision API calls are expensive, keep modest
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +82,7 @@ def run_evaluate(
         plan=plan,
         qrels_path=qrels_path,
         queries_path=queries_path,
+        judge=judge,
     )
 
     variants = _resolve_variants(compare_path=compare_path, allow_large=allow_large)
@@ -127,12 +133,17 @@ def run_evaluate(
 # --- Query-set resolution --------------------------------------------------
 
 
+def _is_image_plan(plan: dict[str, Any]) -> bool:
+    return bool(plan.get("embedding", {}).get("modality") == "image")
+
+
 def _resolve_query_set(
     *,
     out_dir: Path,
     plan: dict[str, Any],
     qrels_path: str | None,
     queries_path: str | None,
+    judge: JudgeConfig | None = None,
 ) -> tuple[list[QueryWithExpectedIds], bool]:
     """Returns (queries, derived_flag)."""
     if qrels_path and queries_path:
@@ -140,11 +151,127 @@ def _resolve_query_set(
             pointer="cli",
             reason="pass exactly one of --qrels or --queries (or neither for derived mode)",
         )
+    image = _is_image_plan(plan)
     if qrels_path:
+        if image:
+            return _load_image_qrels(Path(qrels_path)), False
         return _load_qrels(Path(qrels_path)), False
     if queries_path:
         return _load_queries(Path(queries_path)), False
+    if image:
+        return _derive_image_queries(out_dir=out_dir, plan=plan, judge=judge), True
     return _derive_queries(out_dir=out_dir, plan=plan), True
+
+
+def _load_image_qrels(path: Path) -> list[QueryWithExpectedIds]:
+    """Image qrels rows: `{query_text, image_path}`.
+
+    `image_path` is the collection's primary key, so we map it directly to
+    the existing `relevant_ids` shape — no separate image-aware metric path.
+    """
+    if not path.exists():
+        raise InvalidProfileError(pointer=str(path), reason="qrels file not found")
+    out: list[QueryWithExpectedIds] = []
+    with path.open("r", encoding="utf-8") as f:
+        for lineno, raw in enumerate(f, start=1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise InvalidProfileError(
+                    pointer=f"{path}:{lineno}", reason=f"invalid JSON: {exc}"
+                ) from exc
+            query = record.get("query_text") or record.get("query")
+            paths = record.get("image_paths") or record.get("image_path")
+            if isinstance(paths, str):
+                paths = [paths]
+            grade = int(record.get("grade") or 1)
+            if not isinstance(query, str) or not query.strip():
+                raise InvalidProfileError(
+                    pointer=f"{path}:{lineno}",
+                    reason="missing 'query_text' (or 'query') string",
+                )
+            if not paths or not isinstance(paths, list):
+                raise InvalidProfileError(
+                    pointer=f"{path}:{lineno}",
+                    reason="missing 'image_path' / 'image_paths' value",
+                )
+            out.append(
+                QueryWithExpectedIds(
+                    query=query.strip(),
+                    relevant_ids=tuple(str(p) for p in paths),
+                    grade=grade,
+                )
+            )
+    return out
+
+
+def _derive_image_queries(
+    *, out_dir: Path, plan: dict[str, Any], judge: JudgeConfig | None
+) -> list[QueryWithExpectedIds]:
+    """Caption sampled images via a vision-capable judge.
+
+    Caches the captions to `runs/<id>/derived_image_queries.jsonl` so reruns
+    skip the LLM entirely. Each cache row carries `(image_path, caption)`.
+    Re-uses cached rows whose paths still exist; new paths are appended.
+    """
+    if judge is None or not is_vision_capable(judge.provider, judge.model):
+        env_var = (
+            judge.env_var
+            if judge is not None
+            else "OPENAI_API_KEY"  # default suggestion when no --judge-llm at all
+        )
+        provider = f"{judge.provider}:{judge.model}" if judge else "(none)"
+        raise JudgeUnavailableError(provider=provider, env_var=env_var)
+
+    collect_path = out_dir / "collect.json"
+    if not collect_path.exists():
+        raise InvalidProfileError(
+            pointer=str(out_dir), reason="image derived eval needs collect.json with rows[]"
+        )
+    collect = json.loads(collect_path.read_text(encoding="utf-8"))
+    rows = collect.get("rows") or []
+    if not rows:
+        raise InvalidProfileError(
+            pointer=str(out_dir), reason="collect.json has no image rows to sample"
+        )
+
+    cache_path = out_dir / DERIVED_IMAGE_QUERIES_FILE
+    cache: dict[str, str] = {}
+    if cache_path.exists():
+        for line in cache_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            p = rec.get("image_path")
+            cap = rec.get("caption")
+            if isinstance(p, str) and isinstance(cap, str):
+                cache[p] = cap
+
+    sample = rows[:_DERIVED_IMAGE_SAMPLE_SIZE]
+    sample_paths = [str(r["image_path"]) for r in sample if r.get("image_path")]
+    missing = [p for p in sample_paths if p not in cache]
+    if missing:
+        captions = caption_images(judge.provider, judge.model, missing)
+        for p, cap in zip(missing, captions, strict=True):
+            cache[p] = cap
+        with cache_path.open("a", encoding="utf-8") as f:
+            for p in missing:
+                f.write(
+                    json.dumps({"image_path": p, "caption": cache[p]}, ensure_ascii=False) + "\n"
+                )
+
+    return [
+        QueryWithExpectedIds(query=cache[p], relevant_ids=(p,))
+        for p in sample_paths
+        if cache.get(p)
+    ]
 
 
 def _load_qrels(path: Path) -> list[QueryWithExpectedIds]:
@@ -245,6 +372,11 @@ def _evaluate_single(
     concurrency: int,
     judge: JudgeConfig | None,
 ) -> dict[str, Any]:
+    if _is_image_plan(plan):
+        return _evaluate_single_image(
+            label=label, plan=plan, queries=queries, concurrency=concurrency
+        )
+
     client = MilvusClient(uri=plan["target_uri"])
     collection = plan["collection_name"]
     schema = plan["schema"]
@@ -299,6 +431,69 @@ def _evaluate_single(
     rag = _maybe_rag(judge, queries, retrieved_texts) if judge else None
 
     row = _RowResult(label=label, retrieval=retrieval, latency=latency, rag=rag)
+    return row.to_dict()
+
+
+def _evaluate_single_image(
+    *,
+    label: str,
+    plan: dict[str, Any],
+    queries: Sequence[QueryWithExpectedIds],
+    concurrency: int,
+) -> dict[str, Any]:
+    """Image-flow eval: encode queries via CLIP text, dense search, score.
+
+    No RAG metrics (no text corpus to ground answers in). No hybrid (image
+    collections always have sparse disabled).
+    """
+    client = MilvusClient(uri=plan["target_uri"])
+    collection = plan["collection_name"]
+    schema = plan["schema"]
+    embedding = plan["embedding"]
+    pk = schema["primary_key"]
+    vector_field = schema["vector_field"]
+    model_id = str(embedding.get("model") or "ViT-B-32")
+    device_hint = embedding.get("device_hint")
+    provider = str(embedding["provider"]).lower()
+
+    if provider != "clip-local":
+        # Voyage multimodal query encoding lives behind its own API call;
+        # the MVP scope (issue #14) gates evaluate on clip-local. Surface a
+        # clean error rather than silently producing wrong vectors.
+        raise BackendUnsupportedError(
+            uri=provider,
+            feature="image-evaluate currently supports clip-local only (Voyage TODO)",
+        )
+
+    def _encode(text: str) -> list[float]:
+        return embed_text_with_clip([text], model_id=model_id, device_hint=device_hint)[0]
+
+    def _search(q: str) -> list[str]:
+        qvec = _encode(q)
+        res = client.search(
+            collection_name=collection,
+            data=[qvec],
+            anns_field=vector_field,
+            limit=_TOP_K,
+            output_fields=[pk],
+        )
+        ids: list[str] = []
+        for batch in res or []:
+            for hit in batch:
+                entity = getattr(hit, "entity", None)
+                pk_val = (
+                    entity.get(pk) if entity is not None else hit.get(pk)
+                ) if hasattr(hit, "get") or entity is not None else None
+                ids.append(str(pk_val) if pk_val else "")
+        return ids
+
+    ranked_ids: list[list[str]] = []
+    for q in queries:
+        ranked_ids.append(_search(q.query))
+
+    retrieval = compute_retrieval_metrics(queries, ranked_ids, k=_TOP_K)
+    latency = compute_latency(_search, [q.query for q in queries], concurrency=concurrency)
+    row = _RowResult(label=label, retrieval=retrieval, latency=latency, rag=None)
     return row.to_dict()
 
 
