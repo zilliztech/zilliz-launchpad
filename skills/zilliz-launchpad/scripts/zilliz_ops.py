@@ -137,8 +137,23 @@ def execute(
     input: Path | None = typer.Option(None, "--input", "-i"),  # noqa: B008
     ui_port: int = typer.Option(8000, "--ui-port"),
     no_ui: bool = typer.Option(False, "--no-ui", help="Skip starting the sidecar"),
+    prefetch_models: bool = typer.Option(
+        False,
+        "--prefetch-models",
+        help="Download CLIP / image-embedding weights without ingesting and exit.",
+    ),
 ) -> None:
     """Phase 4 — apply plan and start UI sidecar."""
+    if prefetch_models:
+        from lib.embeddings import prefetch_clip
+
+        try:
+            prefetch_clip()
+        except LaunchpadError as e:
+            _fail(e)
+        typer.echo("✓ CLIP weights cached")
+        return
+
     out = resolve_run_dir(run_dir)
     try:
         report = phase_execute.run_execute(
@@ -157,6 +172,8 @@ def execute(
     if report.get("smoke_hits"):
         top = report["smoke_hits"][0]
         typer.echo(f"✓ Top-1: {top['id']} score={top['score']:.4f}")
+    elif report.get("ingest_path") == "image-batch":
+        typer.echo("(image collection — smoke query is best-effort)")
     else:
         typer.echo("✗ Smoke query returned zero hits")
         raise typer.Exit(code=3)
