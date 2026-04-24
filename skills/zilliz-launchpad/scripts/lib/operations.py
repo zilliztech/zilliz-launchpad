@@ -50,55 +50,113 @@ def _schema_fingerprint(schema: CollectionSchema) -> list[tuple[str, str, dict[s
     return sorted(out, key=lambda r: r[0])
 
 
-def _diff_schemas(
+def _classify_diff(
     existing_fields: list[dict[str, Any]],
     requested: CollectionSchema,
-) -> list[str]:
-    """Return human-readable mismatch strings; empty list if compatible."""
-    wanted = {
-        f.name: (_dtype_name(f.dtype), dict(getattr(f, "params", {}) or {}))
-        for f in requested.fields
-    }
+) -> tuple[list[FieldSchema], list[str]]:
+    """Split a schema diff into (additive, fatal).
+
+    `additive` is the list of FieldSchema entries present in the plan but not
+    in the existing collection — candidates for `add_collection_field`.
+    `fatal` is a list of human-readable strings describing incompatible
+    differences (type/param mismatch, or fields present in the existing
+    collection but dropped from the plan).
+    """
     have = {
         f["name"]: (_dtype_name(f.get("type")), dict(f.get("params") or {}))
         for f in existing_fields
     }
+    wanted_names = {f.name for f in requested.fields}
 
-    mismatches: list[str] = []
-    for name, (wtype, wparams) in wanted.items():
-        if name not in have:
-            mismatches.append(f"missing field: {name}")
+    additive: list[FieldSchema] = []
+    fatal: list[str] = []
+
+    for f in requested.fields:
+        wtype = _dtype_name(f.dtype)
+        wparams = dict(getattr(f, "params", {}) or {})
+        if f.name not in have:
+            additive.append(f)
             continue
-        htype, hparams = have[name]
+        htype, hparams = have[f.name]
         if wtype != htype:
-            mismatches.append(f"field '{name}' type differs: have {htype}, want {wtype}")
+            fatal.append(f"field '{f.name}' type differs: have {htype}, want {wtype}")
         for key in ("dim", "max_length"):
             if key in wparams and wparams[key] != hparams.get(key):
-                mismatches.append(
-                    f"field '{name}' param '{key}' differs: "
+                fatal.append(
+                    f"field '{f.name}' param '{key}' differs: "
                     f"have {hparams.get(key)}, want {wparams[key]}"
                 )
+
     for name in have:
-        if name not in wanted:
-            mismatches.append(f"extra field (not in plan): {name}")
-    return mismatches
+        if name not in wanted_names:
+            fatal.append(f"extra field (not in plan): {name}")
+
+    return additive, fatal
+
+
+def _diff_schemas(
+    existing_fields: list[dict[str, Any]],
+    requested: CollectionSchema,
+) -> list[str]:
+    """Return human-readable mismatch strings; empty list if compatible.
+
+    Preserved as a thin wrapper over `_classify_diff` so callers that just
+    want a flat list (tests, error payloads) keep working.
+    """
+    additive, fatal = _classify_diff(existing_fields, requested)
+    return [f"missing field: {f.name}" for f in additive] + fatal
+
+
+def _add_field_kwargs(field: FieldSchema) -> dict[str, Any]:
+    """Build kwargs for `MilvusClient.add_collection_field` from a FieldSchema.
+
+    Fields added to a live collection must be nullable — Milvus fills existing
+    rows with null / default so the operation stays online.
+    """
+    params = dict(getattr(field, "params", {}) or {})
+    kwargs: dict[str, Any] = {"nullable": True}
+    # Forward only the field-schema kwargs that `create_field_schema` accepts.
+    for key in ("max_length", "dim", "element_type", "max_capacity"):
+        if key in params:
+            kwargs[key] = params[key]
+    return kwargs
 
 
 def create_collection(
     client: MilvusClient,
     name: str,
     schema: CollectionSchema,
-) -> Literal["created", "reused"]:
-    """Idempotent create. Raises `SchemaConflictError` on mismatch."""
-    if collection_exists(client, name):
-        info = client.describe_collection(name)
-        existing_fields = info.get("fields", [])
-        mismatches = _diff_schemas(existing_fields, schema)
-        if mismatches:
-            raise SchemaConflictError(collection=name, mismatches=mismatches)
+) -> Literal["created", "reused", "extended"]:
+    """Idempotent create with additive schema evolution.
+
+    - If the collection is absent: create it.
+    - If present and schema matches: reuse.
+    - If present and the only differences are fields the plan added that the
+      collection lacks (type/param of shared fields still match): call
+      `add_collection_field` for each and return `"extended"`. The new fields
+      are added as nullable so existing rows remain valid.
+    - Otherwise: raise `SchemaConflictError`.
+    """
+    if not collection_exists(client, name):
+        client.create_collection(collection_name=name, schema=schema)
+        return "created"
+
+    info = client.describe_collection(name)
+    existing_fields = info.get("fields", [])
+    additive, fatal = _classify_diff(existing_fields, schema)
+    if fatal:
+        mismatches = [f"missing field: {f.name}" for f in additive] + fatal
+        raise SchemaConflictError(collection=name, mismatches=mismatches)
+    if not additive:
         return "reused"
-    client.create_collection(collection_name=name, schema=schema)
-    return "created"
+    for field in additive:
+        client.add_collection_field(
+            collection_name=name,
+            field_name=field.name,
+            data_type=field.dtype,
+            **_add_field_kwargs(field),
+        )
+    return "extended"
 
 
 def load_collection(client: MilvusClient, name: str) -> None:
