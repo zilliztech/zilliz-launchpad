@@ -1,4 +1,5 @@
 .plans/
+.worktrees/
 
 # Python
 __pycache__/
