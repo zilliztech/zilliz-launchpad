@@ -4,6 +4,11 @@
 #
 # Usage:
 #   ./start_milvus.sh [up|down|status|logs|health|clean]
+#   ./start_milvus.sh attu [up|down|status]
+#
+# The `attu` subcommand brings up the optional Attu ops UI at
+# http://localhost:8000 via the `ops` compose profile. See
+# skills/zilliz-launchpad/references/ops-attu.md for playbooks.
 
 set -euo pipefail
 
@@ -88,8 +93,42 @@ EOF
     rm -rf "${HERE}/volumes"
     echo "Removed containers, compose volumes, and ./volumes/ on disk."
     ;;
+  attu)
+    sub="${2:-up}"
+    case "$sub" in
+      up)
+        _require_docker
+        _check_port 8000
+        docker compose --profile ops up -d attu
+        cat <<EOF
+
+Attu is starting.
+  UI:            http://localhost:8000
+  Default target: standalone:19530 (local Milvus over compose network)
+
+Override to a remote cluster (e.g. Zilliz Cloud) with:
+  export ATTU_MILVUS_URL=https://<cluster>.api.cloud.zilliz.com
+  export ATTU_MILVUS_TOKEN=<token>
+  $0 attu down && $0 attu up
+
+Stop with: $0 attu down
+EOF
+        ;;
+      down)
+        _require_docker
+        docker compose --profile ops rm -sf attu
+        ;;
+      status)
+        docker compose --profile ops ps attu
+        ;;
+      *)
+        echo "Usage: $0 attu [up|down|status]" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   *)
-    echo "Usage: $0 [up|down|status|logs|health|clean]" >&2
+    echo "Usage: $0 [up|down|status|logs|health|clean|attu]" >&2
     exit 2
     ;;
 esac

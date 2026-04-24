@@ -82,6 +82,11 @@ Load only the references you need for the current phase. Do not prefetch all of 
 | 4 Execute    | `cli-reference.md` |
 | 5 Evaluate   | `knowledge/evaluation_guide.md` |
 | 6 Deploy     | `observability/metrics.md`, `observability/query-analysis.md`, `deploy-*.md` (match the target) |
+| Ops (any)    | `ops-attu.md` — when the user wants to inspect, debug, or administer a Milvus cluster beyond what the CLI covers |
+
+## Optional: Attu ops UI
+
+Attu is an opt-in admin UI for developers and ops, not a replacement for the Next.js demo UI. Bring it up with `./start_milvus.sh attu up` (serves on `http://localhost:8000`, bound to loopback) when the user needs to verify ingest, drill into eval bad-cases, or run Cloud operations Attu covers but the CLI does not. See `references/ops-attu.md` for playbooks and Cloud connection instructions.
 
 ## Invoking phases
 
