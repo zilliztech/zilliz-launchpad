@@ -120,6 +120,17 @@ Output (`collect.json`, abbreviated):
 >     --use-case image-search --dataset-size 64000 --deployment local-standalone
 > ```
 > Phase 1 walks the directory, reads EXIF, encodes a thumbnail per image. Phase 3 then picks `clip-local` (open-source ViT-B/32, runs on CPU/MPS/CUDA, no API key) by default — install the optional extra first: `uv pip install -e '.[multimodal]'`. The Next.js UI auto-switches to a thumbnail gallery. See [issue #14](https://github.com/zilliztech/zilliz-launchpad/issues/14) for the MVP scope.
+>
+> **Search by example (image → image).** After Phase 4 Execute builds the collection you can query with another image instead of a text phrase. In the demo UI (`pnpm dev` from `scripts/ui/`) click **Search by image…** next to the text box — or drop an image anywhere on the page — to find visually similar images in your collection. Uploads are capped at 10 MB per request. For a CLI smoke:
+> ```bash
+> uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py evaluate \
+>     --query-image ./query/my_dog.jpg
+> ```
+> This prints the top-10 ranked primary keys with scores and is the fastest way to confirm image-to-image is wired. For a labelled eval, mix image-to-image rows into your qrels file (one row per line):
+> ```json
+> {"query_image_path": "query/sunset.jpg", "expected_image_ids": ["photos/sky1.jpg", "photos/beach2.jpg"]}
+> ```
+> and pass the file to `evaluate --qrels path/to/qrels.jsonl` to get recall / MRR / NDCG against your ground truth. Queries against a Voyage-multimodal-backed collection (`embedding_preference: voyage-multimodal-3`) call the Voyage API per query and bill to `VOYAGE_API_KEY`; CLIP-local stays free. See [issue #15](https://github.com/zilliztech/zilliz-launchpad/issues/15).
 
 ---
 

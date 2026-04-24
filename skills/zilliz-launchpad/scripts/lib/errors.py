@@ -186,6 +186,30 @@ class DestructiveWithoutConfirmError(LaunchpadError):
         )
 
 
+class UnsupportedImageProviderError(LaunchpadError):
+    code = "unsupported_image_provider"
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(
+            f"Embedding provider '{provider}' has no image modality; "
+            "re-run plan with an image-capable provider (clip-local or voyage-multimodal-3)",
+            provider=provider,
+        )
+
+
+class ImageDecodeError(LaunchpadError):
+    code = "image_decode_failed"
+
+    SUPPORTED_FORMATS = ["jpg", "jpeg", "png", "webp", "gif"]
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(
+            f"Could not decode upload as a supported image: {reason}",
+            reason=reason,
+            supported_formats=list(self.SUPPORTED_FORMATS),
+        )
+
+
 @dataclass
 class CliErrorEnvelope:
     """Uniform envelope emitted to stderr on failure."""

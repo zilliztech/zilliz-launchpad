@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 import typer
-from lib.errors import CliErrorEnvelope, LaunchpadError
+from lib.errors import CliErrorEnvelope, InvalidProfileError, LaunchpadError
 from lib.phases import collect as phase_collect
 from lib.phases import configure as phase_configure
 from lib.phases import deploy as phase_deploy
@@ -187,6 +187,11 @@ def evaluate(
     run_dir: str | None = typer.Option(None, "--run-dir"),
     qrels: Path | None = typer.Option(None, "--qrels", help="JSONL with {query, relevant_ids[]}"),  # noqa: B008
     queries: Path | None = typer.Option(None, "--queries", help="Plain query list, one per line"),  # noqa: B008
+    query_image: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--query-image",
+        help="Image collections only: run a one-shot similarity smoke and print top-k",
+    ),
     concurrency: int = typer.Option(1, "--concurrency", min=1, max=64),
     judge_llm: str | None = typer.Option(
         None, "--judge-llm", help="<provider>:<model> — enables ragas metrics"
@@ -198,6 +203,28 @@ def evaluate(
 ) -> None:
     """Phase 5 — score retrieval/latency/RAG quality against the live collection."""
     out = resolve_run_dir(run_dir)
+    if query_image is not None and qrels is not None:
+        _fail(
+            InvalidProfileError(
+                pointer="cli",
+                reason="--query-image is a smoke tool and cannot be combined with --qrels",
+            )
+        )
+    if query_image is not None:
+        try:
+            rows = phase_evaluate.run_query_image_smoke(
+                out_dir=out, query_image_path=str(query_image)
+            )
+        except LaunchpadError as e:
+            _fail(e)
+        typer.echo(f"run-dir: {out}")
+        typer.echo(f"query-image: {query_image}")
+        if not rows:
+            typer.echo("(no hits)")
+            return
+        for rank, row in enumerate(rows, start=1):
+            typer.echo(f"  {rank:>2}. score={row['score']:.4f}  {row['id']}")
+        return
     try:
         report = phase_evaluate.run_evaluate(
             out_dir=out,

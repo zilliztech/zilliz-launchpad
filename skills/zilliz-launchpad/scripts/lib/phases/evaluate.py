@@ -33,7 +33,7 @@ from ..evaluator import (
     derive_queries_from_corpus,
 )
 from ..run_dir import load_plan, preflight_execute_artifact
-from ..search import search_dense, search_hybrid
+from ..search import search_dense, search_hybrid, search_image_to_image
 from ..vision_judge import caption_images, is_vision_capable
 from .execute import _iter_documents
 
@@ -130,6 +130,45 @@ def run_evaluate(
     return report
 
 
+# --- Query-image smoke -----------------------------------------------------
+
+
+def run_query_image_smoke(
+    *,
+    out_dir: Path,
+    query_image_path: str,
+    top_k: int = _TOP_K,
+) -> list[dict[str, Any]]:
+    """Smoke path: encode a query image, return top-k hits, skip metrics.
+
+    Writes nothing to disk. The CLI formats the returned rows for stdout.
+    """
+    preflight_execute_artifact(out_dir)
+    plan = load_plan(out_dir)
+    if not _is_image_plan(plan):
+        raise InvalidProfileError(
+            pointer="cli",
+            reason="--query-image requires an image collection; this run is text-only",
+        )
+    path = Path(query_image_path)
+    if not path.exists():
+        raise InvalidProfileError(pointer=str(path), reason="query image file not found")
+    image_bytes = path.read_bytes()
+
+    client = MilvusClient(uri=plan["target_uri"])
+    schema = plan["schema"]
+    hits = search_image_to_image(
+        client,
+        plan["collection_name"],
+        image_bytes,
+        plan,
+        top_k=top_k,
+        vector_field=schema["vector_field"],
+        output_fields=[schema["primary_key"]],
+    )
+    return [{"id": h.id, "score": h.score} for h in hits]
+
+
 # --- Query-set resolution --------------------------------------------------
 
 
@@ -164,10 +203,13 @@ def _resolve_query_set(
 
 
 def _load_image_qrels(path: Path) -> list[QueryWithExpectedIds]:
-    """Image qrels rows: `{query_text, image_path}`.
+    """Image qrels loader. Accepts two row shapes, possibly mixed in one file:
 
-    `image_path` is the collection's primary key, so we map it directly to
-    the existing `relevant_ids` shape — no separate image-aware metric path.
+    - Text→image: `{query_text, image_paths}` (existing)
+    - Image→image: `{query_image_path, expected_image_ids}` (new in #15)
+
+    `image_paths` / `expected_image_ids` become the collection's primary keys,
+    so both rows land in `relevant_ids` and share the downstream metric path.
     """
     if not path.exists():
         raise InvalidProfileError(pointer=str(path), reason="qrels file not found")
@@ -183,27 +225,57 @@ def _load_image_qrels(path: Path) -> list[QueryWithExpectedIds]:
                 raise InvalidProfileError(
                     pointer=f"{path}:{lineno}", reason=f"invalid JSON: {exc}"
                 ) from exc
-            query = record.get("query_text") or record.get("query")
-            paths = record.get("image_paths") or record.get("image_path")
-            if isinstance(paths, str):
-                paths = [paths]
             grade = int(record.get("grade") or 1)
-            if not isinstance(query, str) or not query.strip():
-                raise InvalidProfileError(
-                    pointer=f"{path}:{lineno}",
-                    reason="missing 'query_text' (or 'query') string",
+            query_image_path = record.get("query_image_path")
+            query_text = record.get("query_text") or record.get("query")
+
+            if query_image_path:
+                relevant = (
+                    record.get("expected_image_ids")
+                    or record.get("expected_image_paths")
+                    or record.get("image_paths")
                 )
-            if not paths or not isinstance(paths, list):
-                raise InvalidProfileError(
-                    pointer=f"{path}:{lineno}",
-                    reason="missing 'image_path' / 'image_paths' value",
+                if isinstance(relevant, str):
+                    relevant = [relevant]
+                if not relevant or not isinstance(relevant, list):
+                    raise InvalidProfileError(
+                        pointer=f"{path}:{lineno}",
+                        reason=("image→image row missing 'expected_image_ids' list"),
+                    )
+                out.append(
+                    QueryWithExpectedIds(
+                        query=str(query_image_path),
+                        relevant_ids=tuple(str(p) for p in relevant),
+                        grade=grade,
+                        query_image_path=str(query_image_path),
+                    )
                 )
-            out.append(
-                QueryWithExpectedIds(
-                    query=query.strip(),
-                    relevant_ids=tuple(str(p) for p in paths),
-                    grade=grade,
+                continue
+
+            if query_text:
+                paths = record.get("image_paths") or record.get("image_path")
+                if isinstance(paths, str):
+                    paths = [paths]
+                if not paths or not isinstance(paths, list):
+                    raise InvalidProfileError(
+                        pointer=f"{path}:{lineno}",
+                        reason="missing 'image_path' / 'image_paths' value",
+                    )
+                out.append(
+                    QueryWithExpectedIds(
+                        query=str(query_text).strip(),
+                        relevant_ids=tuple(str(p) for p in paths),
+                        grade=grade,
+                    )
                 )
+                continue
+
+            raise InvalidProfileError(
+                pointer=f"{path}:{lineno}",
+                reason=(
+                    "qrels row must carry 'query_text' (text→image) or "
+                    "'query_image_path' (image→image)"
+                ),
             )
     return out
 
@@ -441,10 +513,13 @@ def _evaluate_single_image(
     queries: Sequence[QueryWithExpectedIds],
     concurrency: int,
 ) -> dict[str, Any]:
-    """Image-flow eval: encode queries via CLIP text, dense search, score.
+    """Image-flow eval: route text queries via CLIP-text, image queries via
+    the image-to-image path.
 
     No RAG metrics (no text corpus to ground answers in). No hybrid (image
-    collections always have sparse disabled).
+    collections always have sparse disabled). Queries whose `query_image_path`
+    points at a missing file are skipped with a stderr warning and drop out
+    of retrieval math; latency timing still runs over the surviving rows.
     """
     client = MilvusClient(uri=plan["target_uri"])
     collection = plan["collection_name"]
@@ -456,20 +531,42 @@ def _evaluate_single_image(
     device_hint = embedding.get("device_hint")
     provider = str(embedding["provider"]).lower()
 
-    if provider != "clip-local":
-        # Voyage multimodal query encoding lives behind its own API call;
-        # the MVP scope (issue #14) gates evaluate on clip-local. Surface a
-        # clean error rather than silently producing wrong vectors.
+    has_text_queries = any(q.query_image_path is None for q in queries)
+    if provider != "clip-local" and has_text_queries:
+        # Voyage multimodal query encoding for text lives behind its own API
+        # call; the MVP scope (#14) gates evaluate on clip-local for text rows.
         raise BackendUnsupportedError(
             uri=provider,
-            feature="image-evaluate currently supports clip-local only (Voyage TODO)",
+            feature="image-evaluate text queries currently require clip-local (Voyage TODO)",
         )
 
-    def _encode(text: str) -> list[float]:
+    # Cache image-query embeddings so the same query file isn't re-encoded
+    # when it appears in multiple qrels rows within one run.
+    image_vec_cache: dict[str, list[float]] = {}
+    skipped_missing: list[str] = []
+
+    def _encode_text(text: str) -> list[float]:
         return embed_text_with_clip([text], model_id=model_id, device_hint=device_hint)[0]
 
-    def _search(q: str) -> list[str]:
-        qvec = _encode(q)
+    def _encode_image(query_image_path: str) -> list[float] | None:
+        cached = image_vec_cache.get(query_image_path)
+        if cached is not None:
+            return cached
+        p = Path(query_image_path)
+        if not p.exists():
+            logger.warning(
+                "eval: skipping image-to-image row — query image not found: %s",
+                query_image_path,
+            )
+            skipped_missing.append(query_image_path)
+            return None
+        from ..search import _encode_query_image
+
+        vec = _encode_query_image(p.read_bytes(), plan)
+        image_vec_cache[query_image_path] = vec
+        return vec
+
+    def _run_search(qvec: list[float]) -> list[str]:
         res = client.search(
             collection_name=collection,
             data=[qvec],
@@ -489,14 +586,48 @@ def _evaluate_single_image(
                 ids.append(str(pk_val) if pk_val else "")
         return ids
 
+    def _search_one(q: QueryWithExpectedIds) -> list[str]:
+        if q.query_image_path:
+            vec = _encode_image(q.query_image_path)
+            if vec is None:
+                return []
+            return _run_search(vec)
+        return _run_search(_encode_text(q.query))
+
+    survivors: list[QueryWithExpectedIds] = []
     ranked_ids: list[list[str]] = []
     for q in queries:
-        ranked_ids.append(_search(q.query))
+        hits = _search_one(q)
+        if q.query_image_path and not hits and q.query_image_path in skipped_missing:
+            continue  # dropped entirely; no contribution to metrics or latency
+        survivors.append(q)
+        ranked_ids.append(hits)
 
-    retrieval = compute_retrieval_metrics(queries, ranked_ids, k=_TOP_K)
-    latency = compute_latency(_search, [q.query for q in queries], concurrency=concurrency)
+    retrieval = compute_retrieval_metrics(survivors, ranked_ids, k=_TOP_K)
+    # Latency uses a bytes-and-text agnostic lambda so concurrency timing
+    # exercises both routing branches that a caller actually hits.
+    latency = compute_latency(
+        lambda label_str: _search_one(_query_by_label(survivors, label_str)),
+        [_label_for(q) for q in survivors],
+        concurrency=concurrency,
+    )
     row = _RowResult(label=label, retrieval=retrieval, latency=latency, rag=None)
-    return row.to_dict()
+    out = row.to_dict()
+    if skipped_missing:
+        out["skipped_queries"] = list(skipped_missing)
+    return out
+
+
+def _label_for(q: QueryWithExpectedIds) -> str:
+    return q.query_image_path or q.query
+
+
+def _query_by_label(queries: Sequence[QueryWithExpectedIds], label: str) -> QueryWithExpectedIds:
+    for q in queries:
+        if _label_for(q) == label:
+            return q
+    # Fallback — shouldn't happen because labels come from the same list
+    return queries[0]
 
 
 def _search_only_timing(search_fn: Callable[[str], Any]) -> Callable[[str], Any]:
@@ -675,7 +806,7 @@ def _build_report(
     variant_rows: list[dict[str, Any]],
     derived: bool,
 ) -> dict[str, Any]:
-    return {
+    report: dict[str, Any] = {
         "derived": derived,
         "latency_metrics": base_row["latency"],
         "query_count": len(queries),
@@ -685,6 +816,10 @@ def _build_report(
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "variants": variant_rows,
     }
+    if base_row.get("skipped_queries"):
+        report["skipped_queries"] = list(base_row["skipped_queries"])
+        report["skipped_count"] = len(base_row["skipped_queries"])
+    return report
 
 
 def _write_report(out_dir: Path, report: dict[str, Any]) -> None:

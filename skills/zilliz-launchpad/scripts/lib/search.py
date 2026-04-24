@@ -9,8 +9,8 @@ from typing import Any, Literal
 from pymilvus import MilvusClient
 
 from .credentials import resolve_required
-from .embeddings import EmbeddingProvider
-from .errors import SparseUnavailable
+from .embeddings import EmbeddingProvider, embed_image_batch, embed_image_batch_voyage
+from .errors import ImageDecodeError, SparseUnavailable, UnsupportedImageProviderError
 
 FusionMode = Literal["rrf", "weighted"]
 Mode = Literal["dense", "sparse", "hybrid"]
@@ -64,6 +64,79 @@ def search_dense(
     hits = _hits_from_milvus(raw[0]) if raw else []
     if rerank:
         hits = apply_reranker(rerank, query_text, hits)[:top_k]
+    return hits[:top_k]
+
+
+_IMAGE_PROVIDERS = frozenset({"clip-local", "voyage"})
+
+
+def _encode_query_image(image_bytes: bytes, plan: dict[str, Any]) -> list[float]:
+    """Encode raw image bytes into a query vector matching the plan's provider.
+
+    Writes bytes to a NamedTemporaryFile so the existing path-based encoders
+    in `embeddings.py` can be reused without change. The file is unlinked on
+    exit of the `with` block regardless of exception paths.
+    """
+    import tempfile
+
+    embedding = plan.get("embedding") or {}
+    provider = str(embedding.get("provider") or "").lower()
+    if provider not in _IMAGE_PROVIDERS:
+        raise UnsupportedImageProviderError(provider or "(none)")
+    if provider == "voyage" and str(embedding.get("modality") or "") != "image":
+        raise UnsupportedImageProviderError(str(embedding.get("provider")))
+
+    with tempfile.NamedTemporaryFile(suffix=".img", delete=True) as tmp:
+        tmp.write(image_bytes)
+        tmp.flush()
+        try:
+            if provider == "clip-local":
+                model_id = str(embedding.get("model") or "ViT-B-32")
+                device_hint = embedding.get("device_hint")
+                vecs = embed_image_batch([tmp.name], model_id=model_id, device_hint=device_hint)
+            else:
+                model_id = str(embedding.get("model") or "voyage-multimodal-3")
+                vecs = embed_image_batch_voyage([tmp.name], model_id=model_id)
+        except UnsupportedImageProviderError:
+            raise
+        except Exception as exc:
+            # Pillow's UnidentifiedImageError, Voyage API errors, torch failures —
+            # they all mean we could not turn these bytes into a usable query vector.
+            raise ImageDecodeError(str(exc)) from exc
+
+    if not vecs:
+        raise ImageDecodeError("encoder returned no vector")
+    return list(vecs[0])
+
+
+def search_image_to_image(
+    client: MilvusClient,
+    collection: str,
+    image_bytes: bytes,
+    plan: dict[str, Any],
+    *,
+    top_k: int = 10,
+    vector_field: str = "embedding",
+    filter: str | None = None,
+    output_fields: Sequence[str] | None = None,
+) -> list[Hit]:
+    """Dense-search the image collection using another image as the query.
+
+    The query image is encoded with whatever provider the plan recorded at
+    ingest time — query vectors must live in the same embedding space as the
+    stored vectors, so we read the provider/model/device_hint from `plan`
+    rather than the environment.
+    """
+    vec = _encode_query_image(image_bytes, plan)
+    raw = client.search(
+        collection_name=collection,
+        data=[vec],
+        anns_field=vector_field,
+        limit=top_k,
+        filter=filter or "",
+        output_fields=list(output_fields) if output_fields else None,
+    )
+    hits = _hits_from_milvus(raw[0]) if raw else []
     return hits[:top_k]
 
 

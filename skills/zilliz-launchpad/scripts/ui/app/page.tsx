@@ -1,8 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { fetchInfo, searchSidecar, SearchMode, type Hit, type InfoResponse } from "@/lib/milvus-client";
+import { useEffect, useRef, useState } from "react";
+import {
+  ACCEPTED_IMAGE_MIME_TYPES,
+  fetchInfo,
+  searchSidecar,
+  searchSidecarImage,
+  SearchMode,
+  type Hit,
+  type InfoResponse,
+} from "@/lib/milvus-client";
 import { ImageGrid } from "./components/ImageGrid";
+
+const ACCEPT_ATTR = ACCEPTED_IMAGE_MIME_TYPES.join(",");
 
 export default function HomePage() {
   const [info, setInfo] = useState<InfoResponse | null>(null);
@@ -13,7 +23,11 @@ export default function HomePage() {
   const [hits, setHits] = useState<Hit[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lastQueryImage, setLastQueryImage] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
+  const [isDropping, setIsDropping] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     fetchInfo()
@@ -38,8 +52,66 @@ export default function HomePage() {
     }
   }
 
+  async function runImageSearch(file: File) {
+    // Client-side MIME guard: the sidecar rejects decode failures with 400,
+    // but catching non-images here avoids a pointless round-trip.
+    const mimeOk = (ACCEPTED_IMAGE_MIME_TYPES as readonly string[]).includes(file.type);
+    if (!mimeOk) {
+      setUploadError(
+        `Unsupported file type: ${file.type || "unknown"}. Supported: JPEG, PNG, WebP, GIF.`,
+      );
+      return;
+    }
+    setUploadError(null);
+    setLoading(true);
+    try {
+      const resp = await searchSidecarImage(file, topK);
+      setHits(resp.hits);
+      setHasSearched(true);
+      setLastQueryImage(file.name);
+    } catch (err: unknown) {
+      // Sidecar error: show inline, keep existing grid visible.
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) {
+      void runImageSearch(file);
+    }
+    // Clear the input so picking the same file twice still fires change.
+    e.target.value = "";
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    setIsDropping(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      void runImageSearch(file);
+    }
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    if (!isDropping) setIsDropping(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    setIsDropping(false);
+  }
+
   return (
-    <main style={{ maxWidth: isImage ? 1100 : 800, margin: "2rem auto", padding: "0 1rem" }}>
+    <main
+      style={{ maxWidth: isImage ? 1100 : 800, margin: "2rem auto", padding: "0 1rem" }}
+      onDragOver={isImage ? handleDragOver : undefined}
+      onDragLeave={isImage ? handleDragLeave : undefined}
+      onDrop={isImage ? handleDrop : undefined}
+    >
       <h1 style={{ fontSize: "1.75rem" }}>zilliz-launchpad</h1>
       <p style={{ color: "#888" }}>
         {isImage
@@ -54,14 +126,14 @@ export default function HomePage() {
 
       <form
         onSubmit={handleSubmit}
-        style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}
+        style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}
       >
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={isImage ? "Describe an image…" : "Ask something…"}
-          style={{ flex: 1 }}
+          style={{ flex: 1, minWidth: 200 }}
           required
         />
         {!isImage && (
@@ -82,7 +154,43 @@ export default function HomePage() {
         <button type="submit" disabled={loading}>
           {loading ? "…" : "Search"}
         </button>
+        {isImage && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPT_ATTR}
+              onChange={handleFilePicked}
+              style={{ display: "none" }}
+              aria-label="Upload query image"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              title="Search by example image"
+            >
+              Search by image…
+            </button>
+          </>
+        )}
       </form>
+
+      {isImage && (
+        <div style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+          <p style={{ color: isDropping ? "#38bdf8" : "#555", fontSize: "0.85rem" }}>
+            {isDropping ? "Drop image to search" : "Tip: drop an image anywhere on this page to search by example"}
+          </p>
+          {lastQueryImage && !uploadError && (
+            <p style={{ color: "#888", fontSize: "0.85rem" }}>
+              Last image query: <code>{lastQueryImage}</code>
+            </p>
+          )}
+          {uploadError && (
+            <p style={{ color: "#f87171", fontSize: "0.85rem" }}>{uploadError}</p>
+          )}
+        </div>
+      )}
 
       {isImage ? (
         <ImageGrid hits={hits} loading={loading} error={error} hasSearched={hasSearched} />
