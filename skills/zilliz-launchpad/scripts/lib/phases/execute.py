@@ -468,6 +468,7 @@ def _run_image_execute(
         "smoke_hits": smoke_hits,
         "ui_port": ui_port if start_ui else None,
         "sidecar_pid": sidecar_pid,
+        "target_uri": plan["target_uri"],
     }
     snap_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"

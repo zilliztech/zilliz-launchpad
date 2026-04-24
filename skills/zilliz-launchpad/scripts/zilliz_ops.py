@@ -180,6 +180,12 @@ def execute(
     if report.get("sidecar_pid"):
         typer.echo(f"UI sidecar pid {report['sidecar_pid']} on port {report['ui_port']}")
         typer.echo("Start the Next.js UI: (cd scripts/ui && pnpm install && pnpm dev)")
+    target_uri = report.get("target_uri", "")
+    if target_uri and "cloud.zilliz.com" not in target_uri:
+        typer.echo(
+            "Tip: run ./start_milvus.sh attu up to inspect the collection in Attu "
+            "(http://localhost:8000)"
+        )
 
 
 @app.command()
