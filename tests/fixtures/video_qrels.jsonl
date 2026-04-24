@@ -1,0 +1,6 @@
+{"query_text": "a red bar sweeping across the frame", "expected_video_ids": ["tests/fixtures/videos/clip_red_sweep.mp4"]}
+{"query_text": "a blue circle pulsing in the center", "expected_video_ids": ["tests/fixtures/videos/clip_blue_pulse.mp4"]}
+{"query_text": "a green square zig-zagging", "expected_video_ids": ["tests/fixtures/videos/clip_green_zigzag.mp4"]}
+{"query_text": "a yellow checkerboard pattern", "expected_video_ids": ["tests/fixtures/videos/clip_yellow_checkerboard.mp4"]}
+{"query_image_path": "tests/fixtures/photos/sunset_01.jpg", "expected_video_ids": ["tests/fixtures/videos/clip_red_sweep.mp4"]}
+{"query_text": "a white dotted pattern", "expected_image_ids": ["tests/fixtures/videos/frames/clip_white_dots/0.jpg"]}

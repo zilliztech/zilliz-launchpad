@@ -44,6 +44,8 @@ class QueryWithExpectedIds:
     relevant_ids: tuple[str, ...] = ()
     grade: int = 1
     query_image_path: str | None = None
+    expected_video_ids: tuple[str, ...] = ()
+    granularity: str = "frame"  # "frame" (match on PK) or "video" (match on video_path)
 
 
 # --- Retrieval metrics ------------------------------------------------------

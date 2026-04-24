@@ -25,6 +25,7 @@ dependencies = [
 multimodal = [
     "open-clip-torch>=2.24",
     "torch>=2.2",
+    "av>=11.0",
 ]
 
 [dependency-groups]
@@ -52,7 +53,7 @@ exclude = ["skills/zilliz-launchpad/scripts/ui", "skills/zilliz-launchpad/script
 [[tool.mypy.overrides]]
 module = [
     "pymilvus.*", "voyageai.*", "cohere.*", "open_clip.*", "torch.*", "PIL.*",
-    "anthropic.*",
+    "anthropic.*", "av.*",
 ]
 ignore_missing_imports = true
 

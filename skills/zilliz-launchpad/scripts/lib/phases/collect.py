@@ -22,6 +22,12 @@ from ..image_io import (
 
 SUPPORTED_SUFFIXES = {".jsonl", ".ndjson", ".csv", ".txt"}
 SUPPORTED_DIR_SUFFIXES = IMAGE_SUFFIXES
+VIDEO_SUFFIXES: frozenset[str] = frozenset({".mp4", ".mov", ".mkv", ".webm"})
+
+DEFAULT_VIDEO_FRAME_INTERVAL_S = 2.0
+DEFAULT_VIDEO_MAX_FRAMES = 600
+DEFAULT_VIDEO_SCENE_THRESHOLD = 0.3
+DEFAULT_VIDEO_SAMPLING_STRATEGY = "every_n_seconds"
 
 
 def _infer_field_type(values: list[Any]) -> str:
@@ -158,6 +164,114 @@ def _read_image_dir(
     }
 
 
+def _read_video_dir(
+    path: Path,
+    *,
+    out_dir: Path,
+    interval_s: float,
+    max_frames_per_video: int,
+    sampling_strategy: str,
+    scene_threshold: float,
+) -> dict[str, Any]:
+    from ..video import (  # noqa: PLC0415 — optional extra, gated by video_dir detection
+        VideoProbeError,
+        list_videos,
+        sample_frames,
+    )
+
+    videos = list_videos(path)
+    if not videos:
+        suffixes = ", ".join(sorted(VIDEO_SUFFIXES))
+        raise InvalidProfileError(
+            "input",
+            f"directory '{path}' contains no supported video files (suffixes: {suffixes})",
+        )
+
+    frames_dir = out_dir / "frames"
+    rows: list[dict[str, Any]] = []
+    for video_path in videos:
+        try:
+            video_rows = sample_frames(
+                video_path,
+                strategy=sampling_strategy,
+                interval_s=interval_s,
+                max_frames=max_frames_per_video,
+                scene_threshold=scene_threshold,
+                out_dir=frames_dir,
+            )
+        except VideoProbeError as exc:
+            print(f"warn: could not probe {video_path.name}: {exc.message}", file=sys.stderr)
+            continue
+        except Exception as exc:  # noqa: BLE001 — unexpected decode/sampler failure
+            print(f"warn: could not sample {video_path.name}: {exc}", file=sys.stderr)
+            continue
+
+        if len(video_rows) >= max_frames_per_video:
+            print(
+                f"warn: {video_path.name} hit max_frames_per_video={max_frames_per_video}; "
+                "increase the cap to sample more densely",
+                file=sys.stderr,
+            )
+        rows.extend(r.to_dict() for r in video_rows)
+
+    if not rows:
+        raise InvalidProfileError(
+            "input",
+            f"directory '{path}' had {len(videos)} candidate video(s) but none could be sampled",
+        )
+
+    fields = [
+        {"name": "video_path", "type": "string", "sample_value": rows[0]["video_path"]},
+        {"name": "t_seconds", "type": "float", "sample_value": rows[0]["t_seconds"]},
+        {"name": "frame_path", "type": "string", "sample_value": rows[0]["frame_path"]},
+        {"name": "source_index", "type": "int", "sample_value": rows[0]["source_index"]},
+    ]
+    return {
+        "data_shape": "video_dir",
+        "fields": fields,
+        "suggested_primary_key": "frame_path",
+        "suggested_text_field": None,
+        "record_count_estimate": len(rows),
+        "rows": rows,
+        "thumbnails_included": True,
+        "video_count": len(videos),
+        "video_sampling": {
+            "strategy": sampling_strategy,
+            "frame_interval_seconds": interval_s,
+            "max_frames_per_video": max_frames_per_video,
+            "scene_threshold": scene_threshold if sampling_strategy == "scene_change" else None,
+        },
+    }
+
+
+def _read_configure_video_knobs(out_dir: Path) -> dict[str, Any]:
+    """Read video sampling knobs from configure.json if present, else defaults."""
+    configure_path = out_dir / "configure.json"
+    if not configure_path.exists():
+        return {
+            "frame_interval_seconds": DEFAULT_VIDEO_FRAME_INTERVAL_S,
+            "max_frames_per_video": DEFAULT_VIDEO_MAX_FRAMES,
+            "sampling_strategy": DEFAULT_VIDEO_SAMPLING_STRATEGY,
+            "scene_threshold": DEFAULT_VIDEO_SCENE_THRESHOLD,
+        }
+    try:
+        data = json.loads(configure_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        data = {}
+    return {
+        "frame_interval_seconds": float(
+            data.get("frame_interval_seconds") or DEFAULT_VIDEO_FRAME_INTERVAL_S
+        ),
+        "max_frames_per_video": int(data.get("max_frames_per_video") or DEFAULT_VIDEO_MAX_FRAMES),
+        "sampling_strategy": str(data.get("sampling_strategy") or DEFAULT_VIDEO_SAMPLING_STRATEGY),
+        "scene_threshold": float(data.get("scene_threshold") or DEFAULT_VIDEO_SCENE_THRESHOLD),
+    }
+
+
+def _dir_is_video_collection(path: Path) -> bool:
+    return any(p.suffix.lower() in VIDEO_SUFFIXES for p in path.iterdir() if p.is_file())
+
+
 def run_collect(
     *,
     input_path: str | None,
@@ -177,11 +291,22 @@ def run_collect(
         if not path.exists():
             raise FileNotFoundError(f"Input not found: {path}")
         if path.is_dir():
-            result = _read_image_dir(
-                path,
-                with_thumbnails=with_thumbnails,
-                thumbnail_cap_rows=thumbnail_cap_rows,
-            )
+            if _dir_is_video_collection(path):
+                knobs = _read_configure_video_knobs(out_dir)
+                result = _read_video_dir(
+                    path,
+                    out_dir=out_dir,
+                    interval_s=knobs["frame_interval_seconds"],
+                    max_frames_per_video=knobs["max_frames_per_video"],
+                    sampling_strategy=knobs["sampling_strategy"],
+                    scene_threshold=knobs["scene_threshold"],
+                )
+            else:
+                result = _read_image_dir(
+                    path,
+                    with_thumbnails=with_thumbnails,
+                    thumbnail_cap_rows=thumbnail_cap_rows,
+                )
             result["source_path"] = str(path)
         else:
             suffix = path.suffix.lower()

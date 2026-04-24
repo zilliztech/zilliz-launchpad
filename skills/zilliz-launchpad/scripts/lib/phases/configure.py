@@ -34,10 +34,19 @@ KNOWN_USE_CASES = {
     "hybrid-search",
     "recommendation",
     "image-search",
+    "video-search",
 }
 
 IMAGE_USE_CASES = {"image-search"}
+VIDEO_USE_CASES = {"video-search"}
 TEXT_DATA_SHAPES = {"jsonl", "csv", "text"}
+
+VIDEO_DEFAULTS: dict[str, Any] = {
+    "frame_interval_seconds": 2.0,
+    "max_frames_per_video": 600,
+    "sampling_strategy": "every_n_seconds",
+    "scene_threshold": 0.3,
+}
 
 CLOUD_TARGETS = {"zilliz-serverless", "zilliz-dedicated", "zilliz-byoc"}
 TARGET_TIER_MAP = {
@@ -140,6 +149,43 @@ def _apply_image_search_defaults(data: dict[str, Any]) -> None:
         )
 
 
+def _apply_video_search_defaults(data: dict[str, Any]) -> None:
+    """Force hybrid off / reranker none for video collections and backfill knobs.
+
+    Mirrors ``_apply_image_search_defaults`` and additionally populates the
+    video-specific sampling knobs with their defaults when the user didn't
+    supply overrides. Emits a stderr warning for each conflicting preference
+    so the override is visible instead of silent.
+    """
+    silent_hybrid = (None, False, "off", "none", "auto")
+    silent_reranker = (None, "none", "off", "auto")
+    conflicting: list[tuple[str, Any]] = []
+    if data.get("hybrid_preference") not in silent_hybrid:
+        conflicting.append(("hybrid_preference", data["hybrid_preference"]))
+    if data.get("reranker_preference") not in silent_reranker:
+        conflicting.append(("reranker_preference", data["reranker_preference"]))
+    data["hybrid_preference"] = False
+    data["reranker_preference"] = "none"
+    for key, default in VIDEO_DEFAULTS.items():
+        if data.get(key) in (None, ""):
+            data[key] = default
+    for key, value in conflicting:
+        print(
+            f"warn: --use-case video-search overrides {key}={value!r} → forced off",
+            file=sys.stderr,
+        )
+
+    if data.get("sampling_strategy") == "scene_change":
+        import shutil  # noqa: PLC0415
+
+        if shutil.which("ffmpeg") is None:
+            print(
+                "warn: sampling_strategy=scene_change requested but ffmpeg is not on PATH; "
+                "collect will fall back to every_n_seconds",
+                file=sys.stderr,
+            )
+
+
 def _validate_modality(data: dict[str, Any], data_shape: str | None) -> None:
     use_case = data.get("use_case")
     if data_shape is None:
@@ -150,10 +196,21 @@ def _validate_modality(data: dict[str, Any], data_shape: str | None) -> None:
             f"collect detected image_dir but use_case={use_case!r} expects text — "
             f"set --use-case image-search or pick a text input",
         )
+    if data_shape == "video_dir" and use_case not in VIDEO_USE_CASES:
+        raise InvalidProfileError(
+            "use_case",
+            f"collect detected video_dir but use_case={use_case!r} expects text — "
+            f"set --use-case video-search or pick a text input",
+        )
     if data_shape in TEXT_DATA_SHAPES and use_case in IMAGE_USE_CASES:
         raise InvalidProfileError(
             "use_case",
             f"collect detected {data_shape} but use_case=image-search expects an image directory",
+        )
+    if data_shape in TEXT_DATA_SHAPES and use_case in VIDEO_USE_CASES:
+        raise InvalidProfileError(
+            "use_case",
+            f"collect detected {data_shape} but use_case=video-search expects a video directory",
         )
 
 
@@ -185,6 +242,8 @@ def run_configure(
 
     if use_case in IMAGE_USE_CASES:
         _apply_image_search_defaults(data)
+    elif use_case in VIDEO_USE_CASES:
+        _apply_video_search_defaults(data)
 
     deployment_target = data.get("deployment_target", "local-standalone")
     preferred_id = data.get("cluster_id")

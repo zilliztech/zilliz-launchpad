@@ -32,6 +32,10 @@ CLOUD_TARGETS = {"zilliz-serverless", "zilliz-dedicated", "zilliz-byoc"}
 DEFAULT_BULK_IMPORT_THRESHOLD = 100_000
 IMAGE_USE_CASES = {"image-search"}
 IMAGE_DATA_SHAPE = "image_dir"
+VIDEO_USE_CASES = {"video-search"}
+VIDEO_DATA_SHAPE = "video_dir"
+
+VOYAGE_MULTIMODAL_PRICE_PER_IMAGE_USD = 0.00012  # indicative; see Voyage pricing
 
 
 @dataclass
@@ -52,7 +56,7 @@ class PlanSpec:
     sparse_enabled: bool
     index: IndexSpec
     reranker: str | None
-    chunking: dict[str, int]
+    chunking: dict[str, Any]
     deployment_target: str
     bulk_import_threshold: int = DEFAULT_BULK_IMPORT_THRESHOLD
     cluster_id: str | None = None
@@ -124,20 +128,25 @@ def _build_schema(
     text = collect["suggested_text_field"]
     skip = {pk, text} if text else {pk}
     extra = [f for f in collect["fields"] if f["name"] not in skip]
+    is_video = collect.get("data_shape") == VIDEO_DATA_SHAPE
+    extra_field_defs: list[dict[str, Any]] = []
+    for f in extra:
+        max_length: int | None
+        if f["name"] == "video_path":
+            max_length = 1024
+        elif f["type"] == "string":
+            max_length = 256
+        else:
+            max_length = None
+        extra_field_defs.append({"name": f["name"], "type": f["type"], "max_length": max_length})
     return {
         "primary_key": pk,
         "text_field": text,
         "vector_field": "embedding",
         "dim": embedding["dim"],
         "sparse_field": "sparse" if sparse else None,
-        "extra_fields": [
-            {
-                "name": f["name"],
-                "type": f["type"],
-                "max_length": 256 if f["type"] == "string" else None,
-            }
-            for f in extra
-        ],
+        "extra_fields": extra_field_defs,
+        "is_video": is_video,
     }
 
 
@@ -185,12 +194,31 @@ def _is_image_profile(collect: dict[str, Any], configure: dict[str, Any]) -> boo
     )
 
 
+def _is_video_profile(collect: dict[str, Any], configure: dict[str, Any]) -> bool:
+    return (
+        collect.get("data_shape") == VIDEO_DATA_SHAPE
+        or configure.get("use_case") in VIDEO_USE_CASES
+    )
+
+
+def _pick_video_provider(configure: dict[str, Any]) -> dict[str, Any]:
+    """Same CLIP-or-Voyage selection as image, but label as video modality."""
+    embedding = _pick_image_provider(configure)
+    # Device hint already set by _pick_image_provider
+    return embedding
+
+
 def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
     collect = profile["collect"]
     configure = profile["configure"]
-    is_image = _is_image_profile(collect, configure)
+    is_video = _is_video_profile(collect, configure)
+    is_image = not is_video and _is_image_profile(collect, configure)
 
-    if is_image:
+    if is_video:
+        embedding = _pick_video_provider(configure)
+        sparse = False
+        reranker = None
+    elif is_image:
         embedding = _pick_image_provider(configure)
         sparse = False
         reranker = None
@@ -205,6 +233,15 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
     schema = _build_schema(collect, embedding, sparse)
     target_uri = configure.get("target_uri") or _target_uri(configure["deployment_target"])
 
+    chunking: dict[str, Any] = {"size": 512, "overlap": 64}
+    if is_video:
+        chunking["video"] = {
+            "frame_interval_seconds": float(configure.get("frame_interval_seconds") or 2.0),
+            "max_frames_per_video": int(configure.get("max_frames_per_video") or 600),
+            "sampling_strategy": str(configure.get("sampling_strategy") or "every_n_seconds"),
+            "scene_threshold": float(configure.get("scene_threshold") or 0.3),
+        }
+
     rationale = [
         f"Dataset size {configure['dataset_size']} → index {index.type} {index.params}",
         f"Deployment '{configure['deployment_target']}' → URI {target_uri}",
@@ -213,7 +250,30 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
             f"model '{embedding['model']}' (dim {embedding['dim']})"
         ),
     ]
-    if is_image:
+    if is_video:
+        vrec = collect.get("record_count_estimate", "?")
+        vcount = collect.get("video_count", "?")
+        rationale.append(
+            f"Video collection ({vcount} videos, {vrec} sampled frames) → "
+            f"sparse field disabled, reranker none, device_hint={embedding['device_hint']}"
+        )
+        video_chunk = chunking["video"]
+        rationale.append(
+            f"Sampling strategy '{video_chunk['sampling_strategy']}' at "
+            f"interval={video_chunk['frame_interval_seconds']}s, "
+            f"cap={video_chunk['max_frames_per_video']} frames/video"
+        )
+        rationale.append(
+            "Schema adds `video_path` (VARCHAR 1024) and `t_seconds` (FLOAT) "
+            "scalars for deep-link playback"
+        )
+        if embedding["provider"] == "voyage" and isinstance(vrec, int):
+            est_cost = vrec * VOYAGE_MULTIMODAL_PRICE_PER_IMAGE_USD
+            rationale.append(
+                f"Voyage multimodal ingest cost ≈ ${est_cost:.4f} "
+                f"({vrec} frames × ${VOYAGE_MULTIMODAL_PRICE_PER_IMAGE_USD})"
+            )
+    elif is_image:
         rationale.append(
             f"Image collection ({collect.get('record_count_estimate', '?')} images) "
             f"→ sparse field disabled, reranker none, device_hint={embedding['device_hint']}"
@@ -235,7 +295,7 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
         sparse_enabled=sparse,
         index=index,
         reranker=reranker,
-        chunking={"size": 512, "overlap": 64},
+        chunking=chunking,
         deployment_target=configure["deployment_target"],
         bulk_import_threshold=DEFAULT_BULK_IMPORT_THRESHOLD,
         cluster_id=configure.get("cluster_id"),
@@ -245,16 +305,21 @@ def plan_from_profile(profile: dict[str, Any]) -> PlanSpec:
 
 def _plan_to_markdown(plan: PlanSpec) -> str:
     is_image = plan.embedding.get("modality") == "image"
-    text_field_line = (
-        f"- Text field: `{plan.schema['text_field']}`"
-        if plan.schema["text_field"]
-        else "- Text field: (none — image collection)"
-    )
-    sparse_line = (
-        f"- Sparse field: `{plan.schema['sparse_field']}`"
-        if plan.sparse_enabled
-        else ("- Sparse field: disabled (image collection)" if is_image else "- Sparse: disabled")
-    )
+    is_video = bool(plan.schema.get("is_video"))
+    if is_video:
+        text_field_line = "- Text field: (none — video collection)"
+        sparse_line = "- Sparse field: disabled (video collection)"
+    elif plan.schema["text_field"]:
+        text_field_line = f"- Text field: `{plan.schema['text_field']}`"
+        sparse_line = (
+            f"- Sparse field: `{plan.schema['sparse_field']}`"
+            if plan.sparse_enabled
+            else "- Sparse: disabled"
+        )
+    else:
+        text_field_line = "- Text field: (none — image collection)"
+        sparse_line = "- Sparse field: disabled (image collection)"
+
     embedding_lines = [
         "## Embedding",
         f"- Provider: `{plan.embedding['provider']}`",
@@ -262,8 +327,29 @@ def _plan_to_markdown(plan: PlanSpec) -> str:
         f"- Dim: {plan.embedding['dim']}",
         f"- Modality: `{plan.embedding.get('modality', 'text')}`",
     ]
-    if is_image:
+    if is_image or is_video:
         embedding_lines.append(f"- Device hint: `{plan.embedding.get('device_hint', 'cpu')}`")
+
+    chunking_lines = [
+        "## Chunking",
+        f"- Size: {plan.chunking.get('size', 512)} tokens (approx)",
+        f"- Overlap: {plan.chunking.get('overlap', 64)} tokens (approx)",
+    ]
+    if is_video:
+        vchunk = plan.chunking.get("video") or {}
+        chunking_lines += [
+            "",
+            "## Video",
+            f"- Sampling strategy: `{vchunk.get('sampling_strategy', 'every_n_seconds')}`",
+            f"- Frame interval: {vchunk.get('frame_interval_seconds', 2.0)} s",
+            f"- Max frames per video: {vchunk.get('max_frames_per_video', 600)}",
+            (
+                f"- Scene threshold: {vchunk.get('scene_threshold', 0.3)}"
+                if vchunk.get("sampling_strategy") == "scene_change"
+                else "- Scene threshold: n/a (every_n_seconds)"
+            ),
+            "- Scalar fields: `video_path` (deep-link), `t_seconds` (timestamp)",
+        ]
 
     lines = [
         "# Launchpad Plan",
@@ -290,9 +376,7 @@ def _plan_to_markdown(plan: PlanSpec) -> str:
         "## Reranker",
         f"- {plan.reranker or 'disabled'}",
         "",
-        "## Chunking",
-        f"- Size: {plan.chunking['size']} tokens (approx)",
-        f"- Overlap: {plan.chunking['overlap']} tokens (approx)",
+        *chunking_lines,
         "",
         "## Rationale",
     ]
