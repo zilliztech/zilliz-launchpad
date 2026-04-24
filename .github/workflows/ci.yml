@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
       - name: Unit tests
-        run: uv run pytest -m "not cloud and not e2e and not multimodal"
+        run: uv run pytest -m "not cloud and not e2e and not multimodal and not documents"
 
   multimodal:
     runs-on: ubuntu-latest
@@ -66,6 +66,17 @@ jobs:
       - run: uv sync --extra multimodal --dev
       - name: Multimodal tests
         run: uv run pytest -m "multimodal and not cloud and not e2e"
+
+  documents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.11"
+      - run: uv sync --extra documents --dev
+      - name: Documents tests
+        run: uv run pytest -m "documents and not cloud and not e2e"
 
   ui:
     runs-on: ubuntu-latest

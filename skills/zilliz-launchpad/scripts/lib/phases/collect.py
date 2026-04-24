@@ -12,7 +12,7 @@ from typing import Any
 from PIL import UnidentifiedImageError
 
 from .. import samples
-from ..errors import InvalidProfileError
+from ..errors import InvalidProfileError, MissingDependencyError
 from ..image_io import (
     IMAGE_SUFFIXES,
     THUMBNAIL_DEFAULT_CAP_ROWS,
@@ -20,7 +20,7 @@ from ..image_io import (
     read_image_metadata,
 )
 
-SUPPORTED_SUFFIXES = {".jsonl", ".ndjson", ".csv", ".txt"}
+SUPPORTED_SUFFIXES = {".jsonl", ".ndjson", ".csv", ".txt", ".md", ".pdf"}
 SUPPORTED_DIR_SUFFIXES = IMAGE_SUFFIXES
 VIDEO_SUFFIXES: frozenset[str] = frozenset({".mp4", ".mov", ".mkv", ".webm"})
 
@@ -28,6 +28,8 @@ DEFAULT_VIDEO_FRAME_INTERVAL_S = 2.0
 DEFAULT_VIDEO_MAX_FRAMES = 600
 DEFAULT_VIDEO_SCENE_THRESHOLD = 0.3
 DEFAULT_VIDEO_SAMPLING_STRATEGY = "every_n_seconds"
+
+PDF_SCANNED_TEXT_THRESHOLD = 50
 
 
 def _infer_field_type(values: list[Any]) -> str:
@@ -272,6 +274,162 @@ def _dir_is_video_collection(path: Path) -> bool:
     return any(p.suffix.lower() in VIDEO_SUFFIXES for p in path.iterdir() if p.is_file())
 
 
+def _strip_yaml_frontmatter(text: str) -> str:
+    if not text.startswith("---\n"):
+        return text
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return text
+    return text[end + len("\n---\n") :]
+
+
+def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
+    sections: list[tuple[str, str]] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if current_heading is not None:
+                body = "\n".join(current_lines).strip()
+                if body:
+                    sections.append((current_heading, body))
+            current_heading = line[3:].strip()
+            current_lines = []
+        elif current_heading is not None:
+            current_lines.append(line)
+    if current_heading is not None:
+        body = "\n".join(current_lines).strip()
+        if body:
+            sections.append((current_heading, body))
+    return sections
+
+
+def _read_markdown(path: Path, *, split_headings: bool) -> dict[str, Any]:
+    raw = path.read_text(encoding="utf-8")
+    text = _strip_yaml_frontmatter(raw)
+    stem = path.stem
+
+    sections = _split_markdown_sections(text) if split_headings else []
+
+    if sections:
+        records: list[dict[str, Any]] = [
+            {"id": f"{stem}-s{i}", "text": body, "section_heading": heading}
+            for i, (heading, body) in enumerate(sections, start=1)
+        ]
+        text_lens = [len(r["text"]) for r in records]
+        head_lens = [len(r["section_heading"]) for r in records]
+        fields: list[dict[str, Any]] = [
+            {
+                "name": "id",
+                "type": "string",
+                "avg_length": int(sum(len(r["id"]) for r in records) / len(records)),
+                "sample_value": records[0]["id"],
+            },
+            {
+                "name": "text",
+                "type": "string",
+                "avg_length": int(sum(text_lens) / len(text_lens)),
+                "sample_value": records[0]["text"][:200],
+            },
+            {
+                "name": "section_heading",
+                "type": "string",
+                "avg_length": int(sum(head_lens) / len(head_lens)),
+                "sample_value": records[0]["section_heading"],
+            },
+        ]
+    else:
+        body = text.strip()
+        records = [{"id": f"{stem}-1", "text": body}]
+        fields = [
+            {
+                "name": "id",
+                "type": "string",
+                "avg_length": len(records[0]["id"]),
+                "sample_value": records[0]["id"],
+            },
+            {
+                "name": "text",
+                "type": "string",
+                "avg_length": len(body),
+                "sample_value": body[:200],
+            },
+        ]
+
+    return {
+        "data_shape": "markdown",
+        "fields": fields,
+        "suggested_primary_key": "id",
+        "suggested_text_field": "text",
+        "record_count_estimate": len(records),
+    }
+
+
+def _read_pdf(path: Path) -> dict[str, Any]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise MissingDependencyError(
+            feature="pdf-collect",
+            install_hint="pip install zilliz-launchpad[documents]",
+        ) from exc
+
+    reader = PdfReader(str(path))
+    stem = path.stem
+    records: list[dict[str, Any]] = []
+    for i, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() or ""
+        records.append(
+            {
+                "id": f"{stem}-p{i}",
+                "text": page_text,
+                "page_number": i,
+                "source_path": str(path),
+            }
+        )
+
+    text_lens = [len(r["text"]) for r in records]
+    fields: list[dict[str, Any]] = [
+        {
+            "name": "id",
+            "type": "string",
+            "avg_length": int(sum(len(r["id"]) for r in records) / max(len(records), 1)),
+            "sample_value": records[0]["id"] if records else None,
+        },
+        {
+            "name": "text",
+            "type": "string",
+            "avg_length": int(sum(text_lens) / len(text_lens)) if text_lens else 0,
+            "sample_value": records[0]["text"][:200] if records else None,
+        },
+        {
+            "name": "page_number",
+            "type": "int",
+            "sample_value": records[0]["page_number"] if records else None,
+        },
+        {
+            "name": "source_path",
+            "type": "string",
+            "avg_length": len(str(path)),
+            "sample_value": str(path),
+        },
+    ]
+
+    result: dict[str, Any] = {
+        "data_shape": "pdf",
+        "fields": fields,
+        "suggested_primary_key": "id",
+        "suggested_text_field": "text",
+        "record_count_estimate": len(records),
+    }
+    if sum(text_lens) < PDF_SCANNED_TEXT_THRESHOLD:
+        result["warnings"] = [
+            f"PDF '{path.name}' appears to contain no extractable text — likely a "
+            "scanned image; consider an OCR pre-processing step."
+        ]
+    return result
+
+
 def run_collect(
     *,
     input_path: str | None,
@@ -279,6 +437,7 @@ def run_collect(
     out_dir: Path,
     with_thumbnails: bool | None = None,
     thumbnail_cap_rows: int = THUMBNAIL_DEFAULT_CAP_ROWS,
+    split_markdown_headings: bool = False,
 ) -> dict[str, Any]:
     if sample is not None:
         records = list(samples.load(sample))
@@ -333,9 +492,14 @@ def run_collect(
                     "suggested_text_field": "text",
                     "record_count_estimate": 1,
                 }
+            elif suffix == ".md":
+                result = _read_markdown(path, split_headings=split_markdown_headings)
+            elif suffix == ".pdf":
+                result = _read_pdf(path)
             else:
                 raise ValueError(
-                    f"Unsupported input suffix: {suffix}. Use {SUPPORTED_SUFFIXES} "
+                    f"Unsupported input suffix: {suffix}. "
+                    f"Use {sorted(SUPPORTED_SUFFIXES)} "
                     f"or pass a directory of images ({sorted(IMAGE_SUFFIXES)})"
                 )
             result["source_path"] = str(path)

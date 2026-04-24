@@ -27,6 +27,9 @@ multimodal = [
     "torch>=2.2",
     "av>=11.0",
 ]
+documents = [
+    "pypdf>=4",
+]
 
 [dependency-groups]
 dev = [
@@ -53,7 +56,7 @@ exclude = ["skills/zilliz-launchpad/scripts/ui", "skills/zilliz-launchpad/script
 [[tool.mypy.overrides]]
 module = [
     "pymilvus.*", "voyageai.*", "cohere.*", "open_clip.*", "torch.*", "PIL.*",
-    "anthropic.*", "av.*",
+    "anthropic.*", "av.*", "pypdf.*",
 ]
 ignore_missing_imports = true
 
@@ -65,4 +68,5 @@ markers = [
     "cloud: requires Zilliz Cloud credentials (excluded from default CI)",
     "e2e: requires running Milvus Standalone",
     "multimodal: requires the [multimodal] extra (torch + open-clip-torch)",
+    "documents: requires the [documents] extra (pypdf)",
 ]

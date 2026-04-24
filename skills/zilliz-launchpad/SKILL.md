@@ -93,7 +93,7 @@ Attu is an opt-in admin UI for developers and ops, not a replacement for the Nex
 Assume the working directory is the repo root.
 
 ```bash
-# Phase 1 — sample data (or --input your.jsonl)
+# Phase 1 — sample data (or --input your.jsonl / .csv / .txt / .md / .pdf / image dir)
 uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py collect --sample movies
 
 # Phase 2 — take defaults with overrides

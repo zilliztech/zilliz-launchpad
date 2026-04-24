@@ -57,6 +57,11 @@ def collect(
         "--thumbnail-cap-rows",
         help="Image dir only. Auto-disable thumbnails above this many images.",
     ),
+    split_markdown_headings: bool = typer.Option(
+        False,
+        "--split-markdown-headings/--no-split-markdown-headings",
+        help="Markdown only. Emit one record per `## ` section instead of one per file.",
+    ),
 ) -> None:
     """Phase 1 — analyze sample data."""
     if sample is None and input is None:
@@ -73,14 +78,23 @@ def collect(
             out_dir=out,
             with_thumbnails=with_thumbnails,
             thumbnail_cap_rows=thumbnail_cap_rows,
+            split_markdown_headings=split_markdown_headings,
         )
     except LaunchpadError as e:
         _fail(e)
     typer.echo(f"run-dir: {out}")
-    if result.get("data_shape") == "image_dir":
+    shape = result.get("data_shape")
+    if shape == "image_dir":
         typer.echo("data_shape: image_dir")
         typer.echo(f"images: {result['record_count_estimate']}")
         typer.echo(f"thumbnails_included: {result['thumbnails_included']}")
+    elif shape in ("markdown", "pdf"):
+        typer.echo(f"data_shape: {shape}")
+        typer.echo(f"records: {result['record_count_estimate']}")
+        typer.echo(f"suggested_primary_key: {result['suggested_primary_key']}")
+        typer.echo(f"suggested_text_field: {result['suggested_text_field']}")
+        for warning in result.get("warnings", []):
+            typer.echo(f"warning: {warning}", err=True)
     else:
         typer.echo(f"suggested_primary_key: {result['suggested_primary_key']}")
         typer.echo(f"suggested_text_field: {result['suggested_text_field']}")

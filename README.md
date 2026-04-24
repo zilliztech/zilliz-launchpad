@@ -94,6 +94,8 @@ Looks at your file, infers field types, picks a candidate primary key and text f
 ```bash
 uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py collect --sample movies
 # or: --input path/to/your.jsonl
+# or: --input path/to/your.pdf      # one record per page (requires `.[documents]` extra)
+# or: --input path/to/notes.md      # whole file; add --split-markdown-headings for `## ` sections
 ```
 
 Output (`collect.json`, abbreviated):
