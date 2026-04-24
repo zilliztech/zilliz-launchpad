@@ -62,3 +62,41 @@ export async function fetchInfo(): Promise<InfoResponse> {
   }
   return (await resp.json()) as InfoResponse;
 }
+
+export const ACCEPTED_IMAGE_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+] as const;
+
+export async function searchSidecarImage(
+  file: File,
+  topK = 10,
+): Promise<SearchResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("top_k", String(topK));
+  const resp = await fetch(`${BASE}/search_image`, {
+    method: "POST",
+    body: form,
+  });
+  if (!resp.ok) {
+    // FastAPI wraps typed errors under `.detail.message`; fall back to raw
+    // text for transport-level failures (413 size cap, CORS, network).
+    let message = `Sidecar /search_image ${resp.status}`;
+    try {
+      const body = (await resp.json()) as { detail?: { message?: string } };
+      if (body?.detail?.message) {
+        message = body.detail.message;
+      }
+    } catch {
+      const text = await resp.text();
+      if (text) {
+        message = `${message}: ${text}`;
+      }
+    }
+    throw new Error(message);
+  }
+  return (await resp.json()) as SearchResponse;
+}

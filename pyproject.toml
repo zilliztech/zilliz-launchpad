@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.7",
     "jsonschema>=4.23",
     "fastapi>=0.115",
+    "python-multipart>=0.0.9",
     "uvicorn[standard]>=0.30",
     "openai>=1.40",
     "cohere>=5.10",

@@ -11,14 +11,22 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .client import MilvusClient
-from .embeddings import embed_text_with_clip, make_embedder
-from .errors import LaunchpadError, SparseUnavailable
-from .search import search_dense, search_hybrid, search_sparse
+from .embeddings import embed_image_batch, embed_text_with_clip, make_embedder
+from .errors import (
+    ImageDecodeError,
+    LaunchpadError,
+    SparseUnavailable,
+    UnsupportedImageProviderError,
+)
+from .search import search_dense, search_hybrid, search_image_to_image, search_sparse
+
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MiB cap documented in design.md
+_SEARCH_IMAGE_TOP_K_MAX = 100
 
 app = FastAPI(title="zilliz-launchpad sidecar")
 
@@ -206,6 +214,133 @@ def search(req: SearchRequest) -> SearchResponse:
         modality="text",
         hits=[Hit(id=h.id, score=h.score, fields=h.fields) for h in hits],
     )
+
+
+class EmbedImageResponse(BaseModel):
+    embedding: list[float]
+    dim: int
+
+
+def _require_image_collection() -> None:
+    if not _is_image():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "not_image_collection",
+                "message": "This endpoint requires an image collection; active plan is text-only.",
+            },
+        )
+
+
+def _read_upload(file: UploadFile) -> bytes:
+    """Read an UploadFile into memory, enforcing the 10 MB cap.
+
+    We buffer in 1 MB chunks and bail the moment the running total would
+    exceed the limit — keeps a hostile 10 GB upload from pinning memory.
+    """
+    buf = bytearray()
+    chunk_size = 1 << 20
+    while True:
+        chunk = file.file.read(chunk_size)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > MAX_IMAGE_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "upload_too_large",
+                    "message": f"Upload exceeds {MAX_IMAGE_UPLOAD_BYTES} byte cap",
+                    "max_bytes": MAX_IMAGE_UPLOAD_BYTES,
+                },
+            )
+    return bytes(buf)
+
+
+def _encode_upload(image_bytes: bytes) -> list[float]:
+    """Encode via the already-loaded CLIP model (or Voyage for that plan)."""
+    plan = _plan()
+    embedding = plan.get("embedding") or {}
+    provider = str(embedding.get("provider") or "").lower()
+    if provider == "clip-local":
+        import tempfile
+
+        model_id = str(embedding.get("model") or "ViT-B-32")
+        device_hint = embedding.get("device_hint")
+        with tempfile.NamedTemporaryFile(suffix=".img", delete=True) as tmp:
+            tmp.write(image_bytes)
+            tmp.flush()
+            try:
+                vecs = embed_image_batch([tmp.name], model_id=model_id, device_hint=device_hint)
+            except Exception as exc:
+                raise ImageDecodeError(str(exc)) from exc
+        if not vecs:
+            raise ImageDecodeError("encoder returned no vector")
+        return list(vecs[0])
+    # Voyage + any other image-capable provider share the path via search.py;
+    # delegate there so the provider-routing logic stays in one place.
+    from .search import _encode_query_image
+
+    return _encode_query_image(image_bytes, plan)
+
+
+@app.post("/embed_image", response_model=EmbedImageResponse)
+def embed_image(file: UploadFile = File(...)) -> EmbedImageResponse:  # noqa: B008
+    _require_image_collection()
+    raw = _read_upload(file)
+    try:
+        vec = _encode_upload(raw)
+    except UnsupportedImageProviderError as e:
+        raise HTTPException(status_code=400, detail=e.to_dict()) from e
+    except ImageDecodeError as e:
+        raise HTTPException(status_code=400, detail=e.to_dict()) from e
+    except LaunchpadError as e:
+        raise HTTPException(status_code=400, detail=e.to_dict()) from e
+    return EmbedImageResponse(embedding=vec, dim=len(vec))
+
+
+@app.post("/search_image", response_model=SearchResponse)
+def search_image(
+    file: UploadFile = File(...),  # noqa: B008
+    top_k: int = Form(default=10),  # noqa: B008
+) -> SearchResponse:
+    _require_image_collection()
+    k = max(1, min(_SEARCH_IMAGE_TOP_K_MAX, int(top_k)))
+    raw = _read_upload(file)
+
+    plan = _plan()
+    client = _client()
+    pk = plan["schema"]["primary_key"]
+    vector_field = plan["schema"]["vector_field"]
+
+    try:
+        hits = search_image_to_image(
+            client,
+            plan["collection_name"],
+            raw,
+            plan,
+            top_k=k,
+            vector_field=vector_field,
+            output_fields=[pk],
+        )
+    except UnsupportedImageProviderError as e:
+        raise HTTPException(status_code=400, detail=e.to_dict()) from e
+    except ImageDecodeError as e:
+        raise HTTPException(status_code=400, detail=e.to_dict()) from e
+    except LaunchpadError as e:
+        raise HTTPException(status_code=400, detail=e.to_dict()) from e
+
+    thumbs = _thumbnails()
+    out: list[Hit] = []
+    for h in hits:
+        path = str(h.fields.get(pk, h.id))
+        row = thumbs.get(path) or {}
+        fields: dict[str, Any] = {pk: path}
+        for key in ("thumbnail_b64", "width", "height", "bytes", "taken_at"):
+            if key in row:
+                fields[key] = row[key]
+        out.append(Hit(id=path, score=h.score, fields=fields))
+    return SearchResponse(mode="dense", modality="image", hits=out)
 
 
 def _image_search(req: SearchRequest) -> SearchResponse:

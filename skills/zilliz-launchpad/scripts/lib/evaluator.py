@@ -34,11 +34,16 @@ class QueryWithExpectedIds:
     still flows through `compute_latency` but is dropped from retrieval math.
     `grade` is an optional graded-relevance value (NDCG uses it; recall/MRR
     treat any appearance as relevant).
+
+    When `query_image_path` is set, the evaluator routes this row through the
+    image→image search path: `query` carries a display label (e.g. the query
+    filename) and the real payload is the bytes at the named path.
     """
 
     query: str
     relevant_ids: tuple[str, ...] = ()
     grade: int = 1
+    query_image_path: str | None = None
 
 
 # --- Retrieval metrics ------------------------------------------------------
