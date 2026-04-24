@@ -154,7 +154,7 @@ Known codes and how to react:
 - No Milvus Lite (only Standalone + Zilliz Cloud)
 - No MCP server (the CLI is designed so one can be added later without touching `lib/`)
 - No on-device embedding — API providers only
-- No video — image-to-image supported (CLI `--query-image`, UI upload/drag-and-drop), frame-sampling not yet
+- Video frame-sampling supported (CLI `--use-case video-search`, UI inline `<video>` deep-link playback); audio / speech-to-text, subtitle / OCR extraction, and live video streams are out of scope
 - No IDE integration beyond Claude Code
 
 If the user asks for any of the above, politely say it's on the roadmap and keep scope tight.

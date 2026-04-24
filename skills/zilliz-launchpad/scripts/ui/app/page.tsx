@@ -11,6 +11,7 @@ import {
   type InfoResponse,
 } from "@/lib/milvus-client";
 import { ImageGrid } from "./components/ImageGrid";
+import { VideoResults } from "./components/VideoResults";
 
 const ACCEPT_ATTR = ACCEPTED_IMAGE_MIME_TYPES.join(",");
 
@@ -36,13 +37,15 @@ export default function HomePage() {
   }, []);
 
   const isImage = info?.modality === "image";
+  const isVideo = info?.modality === "video";
+  const visual = isImage || isVideo;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
     try {
-      const resp = await searchSidecar({ query, mode: isImage ? "dense" : mode, top_k: topK });
+      const resp = await searchSidecar({ query, mode: visual ? "dense" : mode, top_k: topK });
       setHits(resp.hits);
       setHasSearched(true);
     } catch (err: unknown) {
@@ -107,16 +110,18 @@ export default function HomePage() {
 
   return (
     <main
-      style={{ maxWidth: isImage ? 1100 : 800, margin: "2rem auto", padding: "0 1rem" }}
-      onDragOver={isImage ? handleDragOver : undefined}
-      onDragLeave={isImage ? handleDragLeave : undefined}
-      onDrop={isImage ? handleDrop : undefined}
+      style={{ maxWidth: visual ? 1100 : 800, margin: "2rem auto", padding: "0 1rem" }}
+      onDragOver={visual ? handleDragOver : undefined}
+      onDragLeave={visual ? handleDragLeave : undefined}
+      onDrop={visual ? handleDrop : undefined}
     >
       <h1 style={{ fontSize: "1.75rem" }}>zilliz-launchpad</h1>
       <p style={{ color: "#888" }}>
-        {isImage
-          ? `Image search — ${info?.collection_name} (${info?.embedding.provider}/${info?.embedding.model})`
-          : "Demo search — dense / sparse / hybrid"}
+        {isVideo
+          ? `Video search — ${info?.collection_name} (${info?.embedding.provider}/${info?.embedding.model})`
+          : isImage
+            ? `Image search — ${info?.collection_name} (${info?.embedding.provider}/${info?.embedding.model})`
+            : "Demo search — dense / sparse / hybrid"}
       </p>
       {infoError && (
         <p style={{ color: "#f87171" }}>
@@ -132,11 +137,17 @@ export default function HomePage() {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={isImage ? "Describe an image…" : "Ask something…"}
+          placeholder={
+            isVideo
+              ? "Describe a scene…"
+              : isImage
+                ? "Describe an image…"
+                : "Ask something…"
+          }
           style={{ flex: 1, minWidth: 200 }}
           required
         />
-        {!isImage && (
+        {!visual && (
           <select value={mode} onChange={(e) => setMode(e.target.value as SearchMode)}>
             <option value="dense">Dense</option>
             <option value="sparse">Sparse</option>
@@ -154,7 +165,7 @@ export default function HomePage() {
         <button type="submit" disabled={loading}>
           {loading ? "…" : "Search"}
         </button>
-        {isImage && (
+        {visual && (
           <>
             <input
               ref={fileInputRef}
@@ -176,7 +187,7 @@ export default function HomePage() {
         )}
       </form>
 
-      {isImage && (
+      {visual && (
         <div style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
           <p style={{ color: isDropping ? "#38bdf8" : "#555", fontSize: "0.85rem" }}>
             {isDropping ? "Drop image to search" : "Tip: drop an image anywhere on this page to search by example"}
@@ -192,7 +203,9 @@ export default function HomePage() {
         </div>
       )}
 
-      {isImage ? (
+      {isVideo ? (
+        <VideoResults hits={hits} loading={loading} error={error} hasSearched={hasSearched} />
+      ) : isImage ? (
         <ImageGrid hits={hits} loading={loading} error={error} hasSearched={hasSearched} />
       ) : (
         <TextResults hits={hits} loading={loading} error={error} hasSearched={hasSearched} />

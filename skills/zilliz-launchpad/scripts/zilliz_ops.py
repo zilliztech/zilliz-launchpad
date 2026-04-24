@@ -107,6 +107,12 @@ def configure(
     use_case: str | None = typer.Option(None, "--use-case"),
     dataset_size: int | None = typer.Option(None, "--dataset-size"),
     deployment_target: str | None = typer.Option(None, "--deployment"),
+    hybrid_preference: str | None = typer.Option(None, "--hybrid"),
+    reranker_preference: str | None = typer.Option(None, "--reranker"),
+    frame_interval_seconds: float | None = typer.Option(None, "--frame-interval-seconds"),
+    max_frames_per_video: int | None = typer.Option(None, "--max-frames-per-video"),
+    sampling_strategy: str | None = typer.Option(None, "--sampling-strategy"),
+    scene_threshold: float | None = typer.Option(None, "--scene-threshold"),
 ) -> None:
     """Phase 2 — capture requirements."""
     out = (
@@ -118,6 +124,12 @@ def configure(
         "use_case": use_case,
         "dataset_size": dataset_size,
         "deployment_target": deployment_target,
+        "hybrid_preference": hybrid_preference,
+        "reranker_preference": reranker_preference,
+        "frame_interval_seconds": frame_interval_seconds,
+        "max_frames_per_video": max_frames_per_video,
+        "sampling_strategy": sampling_strategy,
+        "scene_threshold": scene_threshold,
     }
     try:
         data = phase_configure.run_configure(
@@ -156,6 +168,11 @@ def execute(
         "--prefetch-models",
         help="Download CLIP / image-embedding weights without ingesting and exit.",
     ),
+    frame_progress: bool = typer.Option(
+        False,
+        "--frame-progress",
+        help="Emit one log line per frame batch during video ingest (noisy).",
+    ),
 ) -> None:
     """Phase 4 — apply plan and start UI sidecar."""
     if prefetch_models:
@@ -176,6 +193,7 @@ def execute(
             input_path=str(input) if input else None,
             ui_port=ui_port,
             start_ui=not no_ui,
+            frame_progress=frame_progress,
         )
     except LaunchpadError as e:
         _fail(e)
@@ -186,8 +204,8 @@ def execute(
     if report.get("smoke_hits"):
         top = report["smoke_hits"][0]
         typer.echo(f"✓ Top-1: {top['id']} score={top['score']:.4f}")
-    elif report.get("ingest_path") == "image-batch":
-        typer.echo("(image collection — smoke query is best-effort)")
+    elif report.get("ingest_path") in ("image-batch", "video-batch"):
+        typer.echo(f"({report['ingest_path']} — smoke query is best-effort)")
     else:
         typer.echo("✗ Smoke query returned zero hits")
         raise typer.Exit(code=3)

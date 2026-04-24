@@ -39,6 +39,9 @@ from .execute import _iter_documents
 
 DERIVED_IMAGE_QUERIES_FILE = "derived_image_queries.jsonl"
 _DERIVED_IMAGE_SAMPLE_SIZE = 12  # vision API calls are expensive, keep modest
+DERIVED_VIDEO_QUERIES_FILE = "derived_video_queries.jsonl"
+_DERIVED_VIDEO_SAMPLE_SIZE = 15
+_VIDEO_RECALL_KS = (1, 5, 10)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,7 @@ def run_evaluate(
     """
     preflight_execute_artifact(out_dir)
     plan = load_plan(out_dir)
+    plan["_run_dir"] = str(out_dir)
     target = detect_target(plan["target_uri"])
     _refuse_milvus_lite(target.uri, target.backend)
 
@@ -145,10 +149,10 @@ def run_query_image_smoke(
     """
     preflight_execute_artifact(out_dir)
     plan = load_plan(out_dir)
-    if not _is_image_plan(plan):
+    if not (_is_image_plan(plan) or _is_video_plan(plan)):
         raise InvalidProfileError(
             pointer="cli",
-            reason="--query-image requires an image collection; this run is text-only",
+            reason=("--query-image requires an image or video collection; this run is text-only"),
         )
     path = Path(query_image_path)
     if not path.exists():
@@ -176,6 +180,10 @@ def _is_image_plan(plan: dict[str, Any]) -> bool:
     return bool(plan.get("embedding", {}).get("modality") == "image")
 
 
+def _is_video_plan(plan: dict[str, Any]) -> bool:
+    return bool(plan.get("schema", {}).get("is_video"))
+
+
 def _resolve_query_set(
     *,
     out_dir: Path,
@@ -190,16 +198,192 @@ def _resolve_query_set(
             pointer="cli",
             reason="pass exactly one of --qrels or --queries (or neither for derived mode)",
         )
+    video = _is_video_plan(plan)
     image = _is_image_plan(plan)
     if qrels_path:
+        if video:
+            return _load_video_qrels(Path(qrels_path)), False
         if image:
             return _load_image_qrels(Path(qrels_path)), False
         return _load_qrels(Path(qrels_path)), False
     if queries_path:
         return _load_queries(Path(queries_path)), False
+    if video:
+        return _derive_video_queries(out_dir=out_dir, plan=plan, judge=judge), True
     if image:
         return _derive_image_queries(out_dir=out_dir, plan=plan, judge=judge), True
     return _derive_queries(out_dir=out_dir, plan=plan), True
+
+
+def _load_video_qrels(path: Path) -> list[QueryWithExpectedIds]:
+    """Video qrels loader. Accepts mixed rows, possibly in one file:
+
+    - Frame-level text: ``{query_text, expected_image_ids}`` (PK = frame_path)
+    - Video-level text: ``{query_text, expected_video_ids}`` (any frame hit
+      whose video_path matches counts)
+    - Image-to-video:  ``{query_image_path, expected_video_ids}``
+
+    Sets ``granularity='video'`` on the row when the expected list keys
+    video ids so the evaluator knows to match on ``video_path`` instead of PK.
+    """
+    if not path.exists():
+        raise InvalidProfileError(pointer=str(path), reason="qrels file not found")
+    out: list[QueryWithExpectedIds] = []
+    with path.open("r", encoding="utf-8") as f:
+        for lineno, raw in enumerate(f, start=1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise InvalidProfileError(
+                    pointer=f"{path}:{lineno}", reason=f"invalid JSON: {exc}"
+                ) from exc
+            grade = int(record.get("grade") or 1)
+            query_image_path = record.get("query_image_path")
+            query_text = record.get("query_text") or record.get("query")
+            expected_video_ids = record.get("expected_video_ids")
+            if isinstance(expected_video_ids, str):
+                expected_video_ids = [expected_video_ids]
+            expected_image_ids = (
+                record.get("expected_image_ids")
+                or record.get("expected_image_paths")
+                or record.get("image_paths")
+                or record.get("image_path")
+            )
+            if isinstance(expected_image_ids, str):
+                expected_image_ids = [expected_image_ids]
+
+            if not (query_text or query_image_path):
+                raise InvalidProfileError(
+                    pointer=f"{path}:{lineno}",
+                    reason=(
+                        "qrels row must carry 'query_text' (text→video) or "
+                        "'query_image_path' (image→video)"
+                    ),
+                )
+
+            if expected_video_ids:
+                out.append(
+                    QueryWithExpectedIds(
+                        query=str(query_text or query_image_path),
+                        relevant_ids=tuple(),
+                        expected_video_ids=tuple(str(v) for v in expected_video_ids),
+                        grade=grade,
+                        query_image_path=str(query_image_path) if query_image_path else None,
+                        granularity="video",
+                    )
+                )
+                continue
+
+            if expected_image_ids:
+                out.append(
+                    QueryWithExpectedIds(
+                        query=str(query_text or query_image_path),
+                        relevant_ids=tuple(str(p) for p in expected_image_ids),
+                        grade=grade,
+                        query_image_path=str(query_image_path) if query_image_path else None,
+                        granularity="frame",
+                    )
+                )
+                continue
+
+            raise InvalidProfileError(
+                pointer=f"{path}:{lineno}",
+                reason=(
+                    "video qrels row must include either 'expected_video_ids' or "
+                    "'expected_image_ids' / 'image_paths'"
+                ),
+            )
+    return out
+
+
+def _derive_video_queries(
+    *, out_dir: Path, plan: dict[str, Any], judge: JudgeConfig | None
+) -> list[QueryWithExpectedIds]:
+    """Caption sampled frames via a vision judge, stratified one-per-video first.
+
+    Each query's gold doc is the **source video** (video-level granularity).
+    The report distinguishes frame vs video recall downstream.
+    """
+    if judge is None or not is_vision_capable(judge.provider, judge.model):
+        env_var = judge.env_var if judge is not None else "OPENAI_API_KEY"
+        provider = f"{judge.provider}:{judge.model}" if judge else "(none)"
+        raise JudgeUnavailableError(provider=provider, env_var=env_var)
+
+    collect_path = out_dir / "collect.json"
+    if not collect_path.exists():
+        raise InvalidProfileError(
+            pointer=str(out_dir), reason="video derived eval needs collect.json with rows[]"
+        )
+    collect = json.loads(collect_path.read_text(encoding="utf-8"))
+    rows = collect.get("rows") or []
+    if not rows:
+        raise InvalidProfileError(
+            pointer=str(out_dir), reason="collect.json has no frame rows to sample"
+        )
+
+    # Stratify: pick the first frame of each unique video first, then fill
+    # randomly from the remainder up to the sample cap.
+    seen_videos: set[str] = set()
+    stratified: list[dict[str, Any]] = []
+    extras: list[dict[str, Any]] = []
+    for r in rows:
+        vp = str(r.get("video_path") or "")
+        if not vp:
+            continue
+        if vp not in seen_videos:
+            stratified.append(r)
+            seen_videos.add(vp)
+        else:
+            extras.append(r)
+    remaining = max(0, _DERIVED_VIDEO_SAMPLE_SIZE - len(stratified))
+    sample = stratified + extras[:remaining]
+    sample = sample[:_DERIVED_VIDEO_SAMPLE_SIZE]
+    sample_frames = [r for r in sample if r.get("frame_path") and r.get("video_path")]
+
+    cache_path = out_dir / DERIVED_VIDEO_QUERIES_FILE
+    cache: dict[str, str] = {}
+    if cache_path.exists():
+        for line in cache_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            p = rec.get("frame_path")
+            cap = rec.get("caption")
+            if isinstance(p, str) and isinstance(cap, str):
+                cache[p] = cap
+
+    missing = [str(r["frame_path"]) for r in sample_frames if r["frame_path"] not in cache]
+    if missing:
+        captions = caption_images(judge.provider, judge.model, missing)
+        for p, cap in zip(missing, captions, strict=True):
+            cache[p] = cap
+        with cache_path.open("a", encoding="utf-8") as f:
+            for p in missing:
+                f.write(
+                    json.dumps({"frame_path": p, "caption": cache[p]}, ensure_ascii=False) + "\n"
+                )
+
+    out: list[QueryWithExpectedIds] = []
+    for r in sample_frames:
+        caption = cache.get(str(r["frame_path"]))
+        if not caption:
+            continue
+        out.append(
+            QueryWithExpectedIds(
+                query=caption,
+                relevant_ids=(str(r["frame_path"]),),
+                expected_video_ids=(str(r["video_path"]),),
+                granularity="video",
+            )
+        )
+    return out
 
 
 def _load_image_qrels(path: Path) -> list[QueryWithExpectedIds]:
@@ -444,6 +628,10 @@ def _evaluate_single(
     concurrency: int,
     judge: JudgeConfig | None,
 ) -> dict[str, Any]:
+    if _is_video_plan(plan):
+        return _evaluate_single_video(
+            label=label, plan=plan, queries=queries, concurrency=concurrency
+        )
     if _is_image_plan(plan):
         return _evaluate_single_image(
             label=label, plan=plan, queries=queries, concurrency=concurrency
@@ -613,6 +801,173 @@ def _evaluate_single_image(
     )
     row = _RowResult(label=label, retrieval=retrieval, latency=latency, rag=None)
     out = row.to_dict()
+    if skipped_missing:
+        out["skipped_queries"] = list(skipped_missing)
+    return out
+
+
+def _hit_get(hit: Any, entity: Any, key: str) -> Any:
+    """Pull a field from a pymilvus hit regardless of its shape (dict vs object)."""
+    if entity is not None:
+        return entity.get(key)
+    if hasattr(hit, "get"):
+        return hit.get(key)
+    return None
+
+
+def _evaluate_single_video(
+    *,
+    label: str,
+    plan: dict[str, Any],
+    queries: Sequence[QueryWithExpectedIds],
+    concurrency: int,
+) -> dict[str, Any]:
+    """Video-flow eval: route queries through CLIP / image-to-image and
+    compute BOTH frame-level and video-level recall.
+
+    Frame-level recall: hit PK (== frame_path) in ``relevant_ids``.
+    Video-level recall: any hit's ``video_path`` in ``expected_video_ids``.
+    """
+    client = MilvusClient(uri=plan["target_uri"])
+    collection = plan["collection_name"]
+    schema = plan["schema"]
+    embedding = plan["embedding"]
+    pk = schema["primary_key"]
+    vector_field = schema["vector_field"]
+    model_id = str(embedding.get("model") or "ViT-B-32")
+    device_hint = embedding.get("device_hint")
+    provider = str(embedding["provider"]).lower()
+
+    has_text_queries = any(q.query_image_path is None for q in queries)
+    if provider != "clip-local" and has_text_queries:
+        raise BackendUnsupportedError(
+            uri=provider,
+            feature="video-evaluate text queries currently require clip-local (Voyage TODO)",
+        )
+
+    image_vec_cache: dict[str, list[float]] = {}
+    skipped_missing: list[str] = []
+
+    def _encode_text(text: str) -> list[float]:
+        return embed_text_with_clip([text], model_id=model_id, device_hint=device_hint)[0]
+
+    def _encode_image(query_image_path: str) -> list[float] | None:
+        cached = image_vec_cache.get(query_image_path)
+        if cached is not None:
+            return cached
+        p = Path(query_image_path)
+        if not p.exists():
+            logger.warning("eval: skipping row — query image not found: %s", query_image_path)
+            skipped_missing.append(query_image_path)
+            return None
+        from ..search import _encode_query_image
+
+        vec = _encode_query_image(p.read_bytes(), plan)
+        image_vec_cache[query_image_path] = vec
+        return vec
+
+    def _run_search(qvec: list[float]) -> tuple[list[str], list[str]]:
+        """Return (frame_ids, video_paths) for the top-k hits."""
+        res = client.search(
+            collection_name=collection,
+            data=[qvec],
+            anns_field=vector_field,
+            limit=_TOP_K,
+            output_fields=[pk, "video_path"],
+        )
+        frame_ids: list[str] = []
+        video_paths: list[str] = []
+        for batch in res or []:
+            for hit in batch:
+                entity = getattr(hit, "entity", None)
+                frame_ids.append(str(_hit_get(hit, entity, pk) or ""))
+                video_paths.append(str(_hit_get(hit, entity, "video_path") or ""))
+        return frame_ids, video_paths
+
+    def _search_one(q: QueryWithExpectedIds) -> tuple[list[str], list[str]]:
+        if q.query_image_path:
+            vec = _encode_image(q.query_image_path)
+            if vec is None:
+                return [], []
+            return _run_search(vec)
+        return _run_search(_encode_text(q.query))
+
+    # Separate rows by granularity so we can compute each metric family over
+    # the right subset of queries.
+    frame_rows: list[tuple[QueryWithExpectedIds, list[str]]] = []
+    video_rows: list[tuple[QueryWithExpectedIds, list[str]]] = []
+    survivors: list[QueryWithExpectedIds] = []
+
+    for q in queries:
+        frame_ids, video_paths = _search_one(q)
+        if q.query_image_path and not frame_ids and q.query_image_path in skipped_missing:
+            continue
+        survivors.append(q)
+        if q.granularity == "video" or q.expected_video_ids:
+            video_rows.append((q, video_paths))
+            if q.relevant_ids:
+                frame_rows.append((q, frame_ids))
+        else:
+            frame_rows.append((q, frame_ids))
+
+    retrieval: dict[str, float] = {}
+    if frame_rows:
+        frame_qrels = [q for q, _ in frame_rows]
+        frame_hits = [h for _, h in frame_rows]
+        frame_metrics = compute_retrieval_metrics(frame_qrels, frame_hits, k=_TOP_K)
+        for key, value in frame_metrics.items():
+            retrieval[f"{key} (frame)"] = value
+
+    if video_rows:
+        # For video-level, we substitute expected_video_ids into relevant_ids
+        # before calling the generic recall helper.
+        proxy_qrels = [
+            QueryWithExpectedIds(
+                query=q.query,
+                relevant_ids=q.expected_video_ids or q.relevant_ids,
+                grade=q.grade,
+            )
+            for q, _ in video_rows
+        ]
+        proxy_hits = [h for _, h in video_rows]
+        for k in _VIDEO_RECALL_KS:
+            block = compute_retrieval_metrics(proxy_qrels, proxy_hits, k=k)
+            for key, value in block.items():
+                if key.startswith("recall@"):
+                    retrieval[f"{key} (video)"] = value
+                elif key == "query_count" and "query_count (video)" not in retrieval:
+                    retrieval["query_count (video)"] = value
+                elif key in ("MRR@10", "NDCG@10") and k == 10:
+                    retrieval[f"{key} (video)"] = value
+
+    # Latency uses the same callable; map survivors back to query labels.
+    def _latency_search(label_str: str) -> tuple[list[str], list[str]]:
+        return _search_one(_query_by_label(survivors, label_str))
+
+    latency = compute_latency(
+        lambda label_str: _latency_search(label_str),
+        [_label_for(q) for q in survivors],
+        concurrency=concurrency,
+    )
+
+    row = _RowResult(label=label, retrieval=retrieval, latency=latency, rag=None)
+    out = row.to_dict()
+
+    # Per-video frame-count distribution (metadata users can sanity-check)
+    try:
+        collect = json.loads(
+            (Path(plan.get("_run_dir", ".")) / "collect.json").read_text(encoding="utf-8")
+        )
+        counts: dict[str, int] = {}
+        for r in collect.get("rows") or []:
+            vp = str(r.get("video_path") or "")
+            if vp:
+                counts[vp] = counts.get(vp, 0) + 1
+        if counts:
+            out["video_frame_distribution"] = counts
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
     if skipped_missing:
         out["skipped_queries"] = list(skipped_missing)
     return out

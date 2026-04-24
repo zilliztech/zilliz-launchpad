@@ -1,5 +1,5 @@
 export type SearchMode = "dense" | "sparse" | "hybrid";
-export type Modality = "text" | "image";
+export type Modality = "text" | "image" | "video";
 
 export interface SearchRequest {
   query: string;
@@ -16,6 +16,11 @@ export interface Hit {
     height?: number;
     bytes?: number;
     taken_at?: string;
+    video_path?: string;
+    t_seconds?: number;
+    video_url?: string | null;
+    video_url_warning?: string | null;
+    source_index?: number;
   };
 }
 
@@ -37,6 +42,13 @@ export interface InfoResponse {
     dim: number;
   };
   has_thumbnails: boolean;
+  video_static_prefix?: string | null;
+  data_shape?: string | null;
+}
+
+export interface VideoFramesRequest {
+  video_path: string;
+  top_k?: number;
 }
 
 const BASE = process.env.NEXT_PUBLIC_SIDECAR_URL ?? "http://127.0.0.1:8000";
@@ -99,4 +111,31 @@ export async function searchSidecarImage(
     throw new Error(message);
   }
   return (await resp.json()) as SearchResponse;
+}
+
+export async function fetchVideoFrames(
+  req: VideoFramesRequest,
+): Promise<SearchResponse> {
+  const resp = await fetch(`${BASE}/video_frames`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!resp.ok) {
+    let message = `Sidecar /video_frames ${resp.status}`;
+    try {
+      const body = (await resp.json()) as { detail?: { message?: string } };
+      if (body?.detail?.message) {
+        message = body.detail.message;
+      }
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return (await resp.json()) as SearchResponse;
+}
+
+export function sidecarBaseUrl(): string {
+  return BASE;
 }

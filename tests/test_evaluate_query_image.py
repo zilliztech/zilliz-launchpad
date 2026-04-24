@@ -143,7 +143,7 @@ def test_query_image_on_text_collection_errors(text_run: Path, tmp_path_factory)
     assert result.exit_code != 0
     combined = result.stdout + result.stderr
     assert "invalid_profile" in combined
-    assert "image collection" in combined
+    assert "image or video collection" in combined
 
 
 def test_query_image_missing_file_errors(image_run: Path):

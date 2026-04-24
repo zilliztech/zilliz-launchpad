@@ -24,6 +24,7 @@ Whether you're new to Milvus or just tired of boilerplate — pick a file, run s
 - **Docker** (local Standalone) or a Zilliz Cloud account
 - **API key** — OpenAI, Voyage, Cohere, or Zilliz BYOM
 - **Optional** — [`zilliz` CLI](https://github.com/zilliztech/zilliz-cli) for Cloud auto-discovery and bulk import
+- **Optional** — `ffmpeg` on `PATH` (needed for video-search frame sampling; scene-change sampling shells out to it directly)
 
 ## Install
 
@@ -133,6 +134,14 @@ Output (`collect.json`, abbreviated):
 > {"query_image_path": "query/sunset.jpg", "expected_image_ids": ["photos/sky1.jpg", "photos/beach2.jpg"]}
 > ```
 > and pass the file to `evaluate --qrels path/to/qrels.jsonl` to get recall / MRR / NDCG against your ground truth. Queries against a Voyage-multimodal-backed collection (`embedding_preference: voyage-multimodal-3`) call the Voyage API per query and bill to `VOYAGE_API_KEY`; CLIP-local stays free. See [issue #15](https://github.com/zilliztech/zilliz-launchpad/issues/15).
+>
+> **Video search?** Point `--input` at a directory of `.mp4 / .mov / .mkv / .webm` clips:
+> ```bash
+> uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py collect --input ./clips/
+> uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py configure \
+>     --use-case video-search --dataset-size 25 --deployment local-standalone
+> ```
+> Phase 1 samples a frame every 2 seconds (default) using PyAV, capped at 600 frames per video, and writes JPEGs under `<run-dir>/frames/`. Phase 3 reuses the same CLIP path image-search uses (or `voyage-multimodal-3` on override) and adds two scalar fields (`video_path`, `t_seconds`) so the UI can deep-link playback. Phase 4 fans out per video, embedding frames in batches with resumable per-video tracking (`processed_videos[]`). The demo UI renders each unique video as a card with the top-scoring frame as the primary thumbnail plus clustered secondary frames under it; clicking mounts an inline `<video>` element seeked to the matched timestamp. Sidecar static-serves videos under `/videos/…`; set `LAUNCHPAD_VIDEO_STATIC_ROOT` to point at your source tree if it lives outside the run-directory parent. Tune sampling density with `--frame-interval-seconds`, `--max-frames-per-video`, and `--sampling-strategy {every_n_seconds, scene_change}` (scene-change needs `ffmpeg` on `PATH`). Evaluation reports both `recall@k (frame)` and `recall@k (video)` so you can see whether the right moment (frame) or the right clip (video) is being retrieved. See [issue #16](https://github.com/zilliztech/zilliz-launchpad/issues/16). Voyage multimodal ingest bills per-frame; for videos default to CLIP-local unless you explicitly opt in. The sidecar upload cap remains 10 MB per request (inherited from image-search).
 
 ---
 
@@ -149,7 +158,7 @@ uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py configure \
 
 | Flag | Common values |
 | --- | --- |
-| `--use-case` | `rag`, `semantic-search`, `hybrid-search`, `recommendation`, `image-search` |
+| `--use-case` | `rag`, `semantic-search`, `hybrid-search`, `recommendation`, `image-search`, `video-search` |
 | `--dataset-size` | row-count estimate, drives index choice |
 | `--deployment` | `local-standalone`, `zilliz-serverless`, `zilliz-dedicated`, `zilliz-byoc` |
 

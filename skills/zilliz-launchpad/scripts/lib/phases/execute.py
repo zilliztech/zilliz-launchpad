@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -23,7 +24,7 @@ from ..embeddings import (
     make_embedder,
     make_image_embedder,
 )
-from ..errors import ClusterNotReadyError, LaunchpadError
+from ..errors import ClusterNotReadyError, LaunchpadError, MissingCredentialError
 from ..ingest import ingest_documents
 from ..operations import build_basic_schema, create_collection, create_index, load_collection
 from ..samples import load as load_sample
@@ -43,6 +44,8 @@ PREFLIGHT_MAX_WAIT_SEC = 60
 IMPORT_POLL_CAP_SEC = 30 * 60
 IMAGE_BATCH_SIZE = 16
 IMAGE_PK_MAX_LENGTH = 512  # absolute paths can be long
+VIDEO_BATCH_SIZE = 16
+VIDEO_PK_MAX_LENGTH = 512  # frame paths include run-dir prefix
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +54,16 @@ def _schema_from_plan(plan_schema: dict[str, Any]) -> CollectionSchema:
     extras: list[tuple[str, DataType, int | None]] = []
     for f in plan_schema["extra_fields"]:
         dt, maxlen = DTYPE_MAP.get(f["type"], (DataType.VARCHAR, 256))
-        extras.append((f["name"], dt, maxlen if maxlen is not None else f.get("max_length")))
+        # Honor per-field overrides (e.g., video_path = 1024)
+        explicit = f.get("max_length")
+        final_maxlen = explicit if explicit is not None else maxlen
+        extras.append((f["name"], dt, final_maxlen))
     text_field = plan_schema.get("text_field")
-    is_image = text_field is None
+    is_visual = text_field is None
+    is_video = bool(plan_schema.get("is_video"))
+    primary_max_length = (
+        VIDEO_PK_MAX_LENGTH if is_video else (IMAGE_PK_MAX_LENGTH if is_visual else 128)
+    )
     return build_basic_schema(
         primary_field=plan_schema["primary_key"],
         text_field=text_field,
@@ -61,7 +71,7 @@ def _schema_from_plan(plan_schema: dict[str, Any]) -> CollectionSchema:
         dim=plan_schema["dim"],
         enable_sparse=plan_schema.get("sparse_field") is not None,
         sparse_field=plan_schema.get("sparse_field") or "sparse",
-        primary_max_length=IMAGE_PK_MAX_LENGTH if is_image else 128,
+        primary_max_length=primary_max_length,
         extra_fields=extras,
     )
 
@@ -476,6 +486,255 @@ def _run_image_execute(
     return report
 
 
+def _collect_is_video(out_dir: Path) -> bool:
+    try:
+        collect = json.loads((out_dir / "collect.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    return bool(collect.get("data_shape") == "video_dir")
+
+
+def _group_rows_by_video(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        vp = str(r.get("video_path") or "")
+        if not vp:
+            continue
+        groups.setdefault(vp, []).append(r)
+    return groups
+
+
+def _ingest_video_rows(
+    *,
+    client: PyMilvusClient,
+    collection: str,
+    groups: dict[str, list[dict[str, Any]]],
+    pk_field: str,
+    vector_field: str,
+    embedder_fn: Any,
+    out_dir: Path,
+    processed_videos: dict[str, dict[str, Any]],
+    skipped_frames: list[dict[str, str]],
+    frame_progress: bool,
+) -> tuple[list[str], int]:
+    """Embed + upsert per-video. Returns (newly_processed_videos, batches)."""
+    newly_processed: list[str] = []
+    batches = 0
+    total_videos = len(groups)
+    for idx, (video_path, rows) in enumerate(sorted(groups.items()), start=1):
+        if video_path in processed_videos:
+            continue
+        video_skip_count = 0
+        for start in range(0, len(rows), VIDEO_BATCH_SIZE):
+            batch = rows[start : start + VIDEO_BATCH_SIZE]
+            paths = [str(r["frame_path"]) for r in batch]
+            try:
+                vectors = embedder_fn(paths)
+            except Exception as exc:
+                for p in paths:
+                    skipped_frames.append({"frame_path": p, "reason": f"batch-embed: {exc}"})
+                    video_skip_count += 1
+                logger.warning(
+                    "video[%s] batch failed (%d frames): %s", video_path, len(paths), exc
+                )
+                continue
+
+            upsert_rows: list[dict[str, Any]] = []
+            for r, v in zip(batch, vectors, strict=True):
+                row: dict[str, Any] = {
+                    pk_field: str(r["frame_path"]),
+                    vector_field: v,
+                    "video_path": str(r["video_path"]),
+                    "t_seconds": float(r.get("t_seconds") or 0.0),
+                }
+                if "source_index" in r:
+                    row["source_index"] = int(r["source_index"])
+                upsert_rows.append(row)
+            try:
+                client.upsert(collection_name=collection, data=upsert_rows)
+            except Exception as exc:
+                for p in paths:
+                    skipped_frames.append({"frame_path": p, "reason": f"upsert: {exc}"})
+                    video_skip_count += 1
+                logger.warning(
+                    "video[%s] upsert failed (%d frames): %s", video_path, len(paths), exc
+                )
+                continue
+            batches += 1
+            if frame_progress:
+                logger.info(
+                    "video[%s] frames %d–%d / %d",
+                    video_path,
+                    start,
+                    start + len(batch),
+                    len(rows),
+                )
+
+        processed_videos[video_path] = {
+            "frame_count": len(rows),
+            "skipped_frame_count": video_skip_count,
+        }
+        newly_processed.append(video_path)
+        logger.info(
+            "video %d/%d %s — %d frames, %d skipped",
+            idx,
+            total_videos,
+            video_path,
+            len(rows),
+            video_skip_count,
+        )
+
+        # Snapshot after each completed video so resume is at video granularity.
+        snapshot = {
+            "phase": "ingesting",
+            "processed_videos": processed_videos,
+            "skipped_frames": skipped_frames,
+        }
+        (out_dir / "execute.json").write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    return newly_processed, batches
+
+
+def _run_video_execute(
+    *,
+    out_dir: Path,
+    plan: dict[str, Any],
+    ui_port: int,
+    start_ui: bool,
+    frame_progress: bool,
+) -> dict[str, Any]:
+    """Video branch: fan-out per video, embed frames, upsert with deep-link scalars."""
+    collect = json.loads((out_dir / "collect.json").read_text(encoding="utf-8"))
+    rows = collect.get("rows") or []
+    if not rows:
+        raise LaunchpadError(
+            "video collection has no frame rows in collect.json",
+            payload={"hint": "rerun `collect --input <dir>` to populate rows[]"},
+        )
+
+    embedding = plan["embedding"]
+    provider = str(embedding["provider"])
+    model = embedding.get("model")
+    device_hint = embedding.get("device_hint")
+
+    # Preflight credential for Voyage before touching Milvus.
+    if provider == "voyage" and not os.environ.get("VOYAGE_API_KEY"):
+        raise MissingCredentialError("VOYAGE_API_KEY")
+
+    embedder_fn = make_image_embedder(provider, model, device_hint)
+
+    # Resume snapshot
+    processed_videos: dict[str, dict[str, Any]] = {}
+    skipped_frames: list[dict[str, str]] = []
+    snap_path = out_dir / "execute.json"
+    if snap_path.exists():
+        try:
+            prior = json.loads(snap_path.read_text(encoding="utf-8"))
+            pv = prior.get("processed_videos")
+            if isinstance(pv, dict):
+                processed_videos = dict(pv)
+            elif isinstance(pv, list):
+                # Back-compat with any early snapshot that used a list.
+                processed_videos = {str(v): {} for v in pv}
+            skipped_frames = list(prior.get("skipped_frames") or [])
+        except (json.JSONDecodeError, OSError):
+            processed_videos = {}
+
+    client = MilvusClient(uri=plan["target_uri"])
+    schema = _schema_from_plan(plan["schema"])
+    coll_status = create_collection(client, plan["collection_name"], schema)
+    idx_status = create_index(
+        client,
+        plan["collection_name"],
+        plan["schema"]["vector_field"],
+        index_type=plan["index"]["type"],
+        metric_type=plan["index"]["metric"],
+        params=plan["index"]["params"],
+    )
+    load_collection(client, plan["collection_name"])
+
+    groups = _group_rows_by_video(rows)
+    pk_field = plan["schema"]["primary_key"]
+    new_videos, batches = _ingest_video_rows(
+        client=client,
+        collection=plan["collection_name"],
+        groups=groups,
+        pk_field=pk_field,
+        vector_field=plan["schema"]["vector_field"],
+        embedder_fn=embedder_fn,
+        out_dir=out_dir,
+        processed_videos=processed_videos,
+        skipped_frames=skipped_frames,
+        frame_progress=frame_progress,
+    )
+
+    # Smoke query: CLIP-local only (parity with image branch)
+    smoke_hits: list[dict[str, Any]] = []
+    smoke_query = "a scene with motion"
+    if provider == "clip-local":
+        try:
+            qvec = embed_text_with_clip(
+                [smoke_query],
+                model_id=str(model or "ViT-B-32"),
+                device_hint=device_hint,
+            )[0]
+            res = client.search(
+                collection_name=plan["collection_name"],
+                data=[qvec],
+                anns_field=plan["schema"]["vector_field"],
+                limit=1,
+                output_fields=[pk_field, "video_path", "t_seconds"],
+            )
+            for batch_res in res or []:
+                for hit in batch_res:
+                    entity = getattr(hit, "entity", None)
+                    pk_val = (
+                        (entity.get(pk_field) if entity is not None else hit.get(pk_field))
+                        if hasattr(hit, "get") or entity is not None
+                        else None
+                    )
+                    smoke_hits.append(
+                        {
+                            "id": str(pk_val) if pk_val else "",
+                            "score": float(getattr(hit, "score", 0.0) or hit.get("distance", 0.0)),
+                        }
+                    )
+        except Exception as exc:
+            logger.warning("video smoke query failed: %s", exc)
+
+    sidecar_pid = _start_sidecar(out_dir, plan, ui_port) if start_ui else None
+
+    report = {
+        "phase": "complete",
+        "collection_status": coll_status,
+        "index_status": idx_status,
+        "ingest_path": "video-batch",
+        "ingest": {
+            "videos_total": len(groups),
+            "videos_ingested_this_run": len(new_videos),
+            "frames_total": len(rows),
+            "frames_skipped_this_run": len(skipped_frames),
+            "batches": batches,
+            "provider": provider,
+            "model": model,
+            "device_hint": device_hint,
+        },
+        "processed_videos": processed_videos,
+        "skipped_frames": skipped_frames,
+        "smoke_query": smoke_query,
+        "smoke_hits": smoke_hits,
+        "ui_port": ui_port if start_ui else None,
+        "sidecar_pid": sidecar_pid,
+        "target_uri": plan["target_uri"],
+    }
+    snap_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return report
+
+
 def run_execute(
     *,
     out_dir: Path,
@@ -483,11 +742,22 @@ def run_execute(
     input_path: str | None,
     ui_port: int,
     start_ui: bool,
+    frame_progress: bool = False,
 ) -> dict[str, Any]:
     plan = json.loads((out_dir / "plan.json").read_text(encoding="utf-8"))
 
     target = detect_target(plan["target_uri"])
     cluster_id = plan.get("cluster_id")
+
+    # Video branch: determined by the presence of a video_dir collect.
+    if plan["embedding"].get("modality") == "image" and _collect_is_video(out_dir):
+        return _run_video_execute(
+            out_dir=out_dir,
+            plan=plan,
+            ui_port=ui_port,
+            start_ui=start_ui,
+            frame_progress=frame_progress,
+        )
 
     # Image branch: short-circuit before any text-flow work.
     if plan["embedding"].get("modality") == "image":
