@@ -227,7 +227,7 @@ def sample_every_n_seconds(
                 pts_s = float(pts * time_base) if pts is not None else 0.0
                 target = target_times[next_target_idx]
                 if pts_s >= target:
-                    img = frame.to_image()  # type: ignore[union-attr]
+                    img = frame.to_image()  # type: ignore[union-attr, unused-ignore]
                     frame_path = frame_dir / f"{next_target_idx}.jpg"
                     _save_frame(img, frame_path)
                     rows.append(
@@ -316,7 +316,7 @@ def sample_scene_change(
                 pts_s = float(pts * time_base) if pts is not None else 0.0
                 target = timestamps[next_idx]
                 if pts_s >= target:
-                    img = frame.to_image()  # type: ignore[union-attr]
+                    img = frame.to_image()  # type: ignore[union-attr, unused-ignore]
                     frame_path = frame_dir / f"{next_idx}.jpg"
                     _save_frame(img, frame_path)
                     rows.append(
