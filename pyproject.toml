@@ -67,4 +67,5 @@ markers = [
     "cloud: requires Zilliz Cloud credentials (excluded from default CI)",
     "e2e: requires running Milvus Standalone",
     "multimodal: requires the [multimodal] extra (torch + open-clip-torch)",
+    "documents: requires the [documents] extra (pypdf)",
 ]

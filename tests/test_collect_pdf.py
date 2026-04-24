@@ -14,6 +14,7 @@ SAMPLE_PDF = FIXTURES / "sample.pdf"
 SCANNED_PDF = FIXTURES / "scanned.pdf"
 
 
+@pytest.mark.documents
 def test_pdf_happy_path_emits_one_record_per_page(tmp_path: Path):
     result = run_collect(input_path=str(SAMPLE_PDF), sample=None, out_dir=tmp_path)
 
@@ -32,6 +33,7 @@ def test_pdf_happy_path_emits_one_record_per_page(tmp_path: Path):
     assert "warnings" not in result
 
 
+@pytest.mark.documents
 def test_pdf_with_no_extractable_text_emits_warning(tmp_path: Path):
     result = run_collect(input_path=str(SCANNED_PDF), sample=None, out_dir=tmp_path)
 
