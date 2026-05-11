@@ -24,9 +24,22 @@ from ..embeddings import (
     make_embedder,
     make_image_embedder,
 )
-from ..errors import ClusterNotReadyError, LaunchpadError, MissingCredentialError
+from ..errors import (
+    ClusterNotReadyError,
+    InvalidProfileError,
+    LaunchpadError,
+    MissingCredentialError,
+    SchemaConflictError,
+)
 from ..ingest import ingest_documents
-from ..operations import build_basic_schema, create_collection, create_index, load_collection
+from ..operations import (
+    _classify_diff,
+    build_basic_schema,
+    collection_exists,
+    create_collection,
+    create_index,
+    load_collection,
+)
 from ..samples import load as load_sample
 from ..search import search_dense
 
@@ -902,4 +915,122 @@ def run_execute(
     (out_dir / "execute.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
     )
+    return report
+
+
+def _next_append_artifact_path(out_dir: Path) -> Path:
+    """Return the next available execute_append[.N].json path."""
+    base = out_dir / "execute_append.json"
+    if not base.exists():
+        return base
+    n = 2
+    while True:
+        candidate = out_dir / f"execute_append.{n}.json"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _read_plan_or_raise(out_dir: Path) -> dict[str, Any]:
+    plan_path = out_dir / "plan.json"
+    if not plan_path.exists():
+        raise InvalidProfileError(
+            pointer=str(plan_path),
+            reason="plan.json is missing; run `plan` before `execute --append`",
+        )
+    return json.loads(plan_path.read_text(encoding="utf-8"))
+
+
+def _verify_existing_schema(client: PyMilvusClient, collection: str, plan_schema: dict[str, Any]) -> None:
+    """Raise SchemaConflictError if the live collection does not match the plan schema."""
+    if not collection_exists(client, collection):
+        raise SchemaConflictError(
+            collection=collection,
+            mismatches=[
+                f"collection '{collection}' does not exist; "
+                "run `execute` (without --append) first or pick the original run-dir",
+            ],
+        )
+    info = client.describe_collection(collection)
+    existing_fields = info.get("fields", [])
+    schema = _schema_from_plan(plan_schema)
+    additive, fatal = _classify_diff(existing_fields, schema)
+    if additive or fatal:
+        mismatches = [f"missing field: {f.name}" for f in additive] + fatal
+        mismatches.append(
+            "remediation: run `execute` (no --append) in a fresh run-dir, "
+            "or align your input to the existing schema"
+        )
+        raise SchemaConflictError(collection=collection, mismatches=mismatches)
+
+
+def run_execute_append(
+    *,
+    out_dir: Path,
+    input_path: str,
+) -> dict[str, Any]:
+    """Append rows from `input_path` to the collection described by `<out_dir>/plan.json`.
+
+    Reuses the existing collection: no create_collection, no create_index, no
+    load_collection. Schema must match plan.json exactly. Writes results to
+    `execute_append.json` (or a numbered sibling) and never touches `execute.json`.
+    """
+    plan = _read_plan_or_raise(out_dir)
+
+    if plan["embedding"].get("modality") == "image":
+        raise InvalidProfileError(
+            pointer="plan.embedding.modality",
+            reason="--append is only supported for text collections in this release",
+        )
+
+    started = time.monotonic()
+    client = MilvusClient(uri=plan["target_uri"])
+    _verify_existing_schema(client, plan["collection_name"], plan["schema"])
+
+    embedder = make_embedder(
+        plan["embedding"]["provider"],
+        plan["embedding"]["model"],
+        plan["embedding"]["dim"],
+    )
+    docs = []
+    path = Path(input_path)
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                docs.append(json.loads(line))
+
+    chunk_config = ChunkConfig(size=plan["chunking"]["size"], overlap=plan["chunking"]["overlap"])
+    extra_keys = tuple(f["name"] for f in plan["schema"]["extra_fields"])
+    stats = ingest_documents(
+        client,
+        plan["collection_name"],
+        docs,
+        embedder,
+        text_field=plan["schema"]["text_field"],
+        id_field=plan["schema"]["primary_key"],
+        vector_field=plan["schema"]["vector_field"],
+        chunk_config=chunk_config,
+        extra_field_keys=extra_keys,
+    )
+
+    report: dict[str, Any] = {
+        "phase": "append-complete",
+        "collection": plan["collection_name"],
+        "target_uri": plan["target_uri"],
+        "input_path": str(input_path),
+        "appended_rows": stats.documents,
+        "ingest": {
+            "documents": stats.documents,
+            "chunks": stats.chunks,
+            "batches": stats.batches,
+            "retries": stats.retries,
+        },
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+    }
+    out_path = _next_append_artifact_path(out_dir)
+    out_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    report["artifact_path"] = str(out_path)
     return report
