@@ -135,9 +135,7 @@ def test_append_end_to_end(tmp_path: Path):
 
     rows = list(load_sample("movies"))[-5:]
     append_input = tmp_path / "docs_v2.jsonl"
-    append_input.write_text(
-        "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
-    )
+    append_input.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
     report = run_execute_append(out_dir=tmp_path, input_path=str(append_input))
     assert report["appended_rows"] == 5
