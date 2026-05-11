@@ -122,6 +122,8 @@ pnpm dev
 # open http://localhost:3000
 ```
 
+For text collections the demo UI exposes a Milvus filter-expression input (e.g. `year >= 2023`) and a reranker toggle (`Off` / `Default`, where `Default` follows the plan's recorded reranker). Result cards render every non-vector scalar field returned by the collection, so ingested metadata like `title` / `year` / `genre` shows up next to the chunk text without further work.
+
 ## Error envelopes
 
 Every CLI error arrives on stderr as a single-line JSON object:

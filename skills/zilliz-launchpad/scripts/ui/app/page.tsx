@@ -21,6 +21,8 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<SearchMode>("dense");
   const [topK, setTopK] = useState(5);
+  const [filter, setFilter] = useState("");
+  const [rerank, setRerank] = useState<"off" | "default">("off");
   const [hits, setHits] = useState<Hit[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +47,13 @@ export default function HomePage() {
     setLoading(true);
     setError(null);
     try {
-      const resp = await searchSidecar({ query, mode: visual ? "dense" : mode, top_k: topK });
+      const resp = await searchSidecar({
+        query,
+        mode: visual ? "dense" : mode,
+        top_k: topK,
+        filter: !visual && filter ? filter : undefined,
+        rerank: !visual && rerank !== "off" ? rerank : undefined,
+      });
       setHits(resp.hits);
       setHasSearched(true);
     } catch (err: unknown) {
@@ -148,11 +156,25 @@ export default function HomePage() {
           required
         />
         {!visual && (
-          <select value={mode} onChange={(e) => setMode(e.target.value as SearchMode)}>
-            <option value="dense">Dense</option>
-            <option value="sparse">Sparse</option>
-            <option value="hybrid">Hybrid</option>
-          </select>
+          <>
+            <select value={mode} onChange={(e) => setMode(e.target.value as SearchMode)}>
+              <option value="dense">Dense</option>
+              <option value="sparse">Sparse</option>
+              <option value="hybrid">Hybrid</option>
+            </select>
+            <select
+              value={rerank}
+              onChange={(e) => setRerank(e.target.value as "off" | "default")}
+              title="Reranker"
+            >
+              <option value="off">Rerank: Off</option>
+              <option value="default" disabled={!info?.default_reranker}>
+                {info?.default_reranker
+                  ? `Rerank: Default (${info.default_reranker})`
+                  : "Rerank: Default (none configured)"}
+              </option>
+            </select>
+          </>
         )}
         <input
           type="number"
@@ -165,6 +187,15 @@ export default function HomePage() {
         <button type="submit" disabled={loading}>
           {loading ? "…" : "Search"}
         </button>
+        {!visual && (
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder='Filter expression (e.g. year >= 2023)'
+            style={{ flexBasis: "100%", minWidth: 200 }}
+          />
+        )}
         {visual && (
           <>
             <input
@@ -208,10 +239,30 @@ export default function HomePage() {
       ) : isImage ? (
         <ImageGrid hits={hits} loading={loading} error={error} hasSearched={hasSearched} />
       ) : (
-        <TextResults hits={hits} loading={loading} error={error} hasSearched={hasSearched} />
+        <TextResults
+          hits={hits}
+          loading={loading}
+          error={error}
+          hasSearched={hasSearched}
+          info={info}
+        />
       )}
     </main>
   );
+}
+
+const TEXT_FIELD_CANDIDATES = ["text", "body", "content", "chunk"] as const;
+
+function pickPrimaryText(fields: Hit["fields"]): { key: string | null; value: string | null } {
+  for (const key of TEXT_FIELD_CANDIDATES) {
+    const v = fields[key];
+    if (typeof v === "string" && v.length > 0) return { key, value: v };
+  }
+  // Fallback: first string-valued field
+  for (const [k, v] of Object.entries(fields)) {
+    if (typeof v === "string" && v.length > 0) return { key: k, value: v };
+  }
+  return { key: null, value: null };
 }
 
 function TextResults({
@@ -219,11 +270,13 @@ function TextResults({
   loading,
   error,
   hasSearched,
+  info,
 }: {
   hits: Hit[];
   loading: boolean;
   error: string | null;
   hasSearched: boolean;
+  info: InfoResponse | null;
 }) {
   if (loading) {
     return <p style={{ color: "#888", marginTop: "1.5rem" }}>Searching…</p>;
@@ -254,25 +307,62 @@ function TextResults({
         gap: "0.75rem",
       }}
     >
-      {hits.map((h) => (
-        <article
-          key={h.id}
-          style={{
-            padding: "1rem",
-            border: "1px solid #222",
-            borderRadius: 8,
-            background: "#0f0f0f",
-          }}
-        >
-          <header style={{ display: "flex", justifyContent: "space-between", color: "#888" }}>
-            <span>{h.id}</span>
-            <span>score: {h.score.toFixed(4)}</span>
-          </header>
-          <pre style={{ whiteSpace: "pre-wrap", marginTop: "0.5rem" }}>
-            {String(h.fields?.text ?? h.fields?.body ?? JSON.stringify(h.fields))}
-          </pre>
-        </article>
-      ))}
+      {hits.map((h) => {
+        const fields = h.fields ?? {};
+        const { key: textKey, value: textValue } = pickPrimaryText(fields);
+        const pk = info?.primary_key;
+        const metaEntries = Object.entries(fields).filter(([k, v]) => {
+          if (k === textKey) return false;
+          if (pk && k === pk) return false;
+          if (v === null || v === undefined) return false;
+          if (typeof v === "string" && v.length === 0) return false;
+          if (Array.isArray(v) || typeof v === "object") return false;
+          return true;
+        });
+        return (
+          <article
+            key={h.id}
+            style={{
+              padding: "1rem",
+              border: "1px solid #222",
+              borderRadius: 8,
+              background: "#0f0f0f",
+            }}
+          >
+            <header style={{ display: "flex", justifyContent: "space-between", color: "#888" }}>
+              <span>{h.id}</span>
+              <span>score: {h.score.toFixed(4)}</span>
+            </header>
+            {metaEntries.length > 0 && (
+              <div
+                style={{
+                  marginTop: "0.5rem",
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "0.5rem",
+                  color: "#9ca3af",
+                  fontSize: "0.85rem",
+                }}
+              >
+                {metaEntries.map(([k, v], i) => (
+                  <span key={k}>
+                    <span style={{ color: "#6b7280" }}>{k}:</span>{" "}
+                    <span style={{ color: "#d1d5db" }}>{String(v)}</span>
+                    {i < metaEntries.length - 1 && <span style={{ marginLeft: "0.5rem" }}>·</span>}
+                  </span>
+                ))}
+              </div>
+            )}
+            {textValue !== null ? (
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: "0.5rem" }}>{textValue}</pre>
+            ) : metaEntries.length === 0 ? (
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: "0.5rem" }}>
+                {JSON.stringify(fields)}
+              </pre>
+            ) : null}
+          </article>
+        );
+      })}
     </section>
   );
 }

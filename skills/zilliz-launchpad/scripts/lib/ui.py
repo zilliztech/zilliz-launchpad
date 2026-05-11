@@ -15,6 +15,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from pymilvus.exceptions import MilvusException
 
 from .client import MilvusClient
 from .embeddings import embed_image_batch, embed_text_with_clip, make_embedder
@@ -167,6 +168,51 @@ class SearchRequest(BaseModel):
     query: str
     top_k: int = Field(default=10, ge=1, le=100)
     mode: Literal["dense", "sparse", "hybrid"] = "dense"
+    filter: str | None = None
+    rerank: str | None = None
+
+
+def _scalar_output_fields(plan: dict[str, Any]) -> list[str]:
+    """Schema scalar fields (pk + text + extra) excluding vector / sparse fields."""
+    schema = plan.get("schema") or {}
+    vector_field = schema.get("vector_field")
+    sparse_field = schema.get("sparse_field")
+    names: list[str] = []
+    seen: set[str] = set()
+    for candidate in (schema.get("primary_key"), schema.get("text_field")):
+        if isinstance(candidate, str) and candidate and candidate not in seen:
+            names.append(candidate)
+            seen.add(candidate)
+    for extra in schema.get("extra_fields") or []:
+        name = extra.get("name") if isinstance(extra, dict) else None
+        if not isinstance(name, str) or not name or name in seen:
+            continue
+        if name == vector_field or name == sparse_field:
+            continue
+        names.append(name)
+        seen.add(name)
+    return names
+
+
+def _resolve_rerank(plan: dict[str, Any], requested: str | None) -> str | None:
+    """Map the request's rerank value to a concrete reranker model name (or None)."""
+    if requested is None:
+        return None
+    value = requested.strip().lower()
+    if value in ("", "off"):
+        return None
+    if value == "default":
+        default = plan.get("reranker")
+        if not isinstance(default, str) or not default:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "no_default_reranker",
+                    "message": "Active plan has no default reranker configured.",
+                },
+            )
+        return default
+    return requested
 
 
 class Hit(BaseModel):
@@ -191,6 +237,7 @@ class InfoResponse(BaseModel):
     has_thumbnails: bool
     video_static_prefix: str | None = None
     data_shape: str | None = None
+    default_reranker: str | None = None
 
 
 @app.get("/health")
@@ -227,6 +274,7 @@ def info() -> InfoResponse:
         has_thumbnails=bool(_thumbnails()),
         video_static_prefix=_VIDEO_STATIC_PREFIX if modality == "video" else None,
         data_shape=data_shape,
+        default_reranker=(plan.get("reranker") if isinstance(plan.get("reranker"), str) else None),
     )
 
 
@@ -240,7 +288,9 @@ def search(req: SearchRequest) -> SearchResponse:
     plan = _plan()
     client = _client()
     embedder = _embedder()
-    text_field = plan["schema"]["text_field"]
+    output_fields = _scalar_output_fields(plan)
+    filter_expr = req.filter or None
+    rerank = _resolve_rerank(plan, req.rerank)
     try:
         if req.mode == "dense":
             hits = search_dense(
@@ -250,7 +300,9 @@ def search(req: SearchRequest) -> SearchResponse:
                 embedder,
                 top_k=req.top_k,
                 vector_field=plan["schema"]["vector_field"],
-                output_fields=[text_field],
+                filter=filter_expr,
+                output_fields=output_fields,
+                rerank=rerank,
             )
         elif req.mode == "sparse":
             hits = search_sparse(
@@ -259,7 +311,9 @@ def search(req: SearchRequest) -> SearchResponse:
                 req.query,
                 top_k=req.top_k,
                 sparse_field=plan["schema"].get("sparse_field") or "sparse",
-                output_fields=[text_field],
+                filter=filter_expr,
+                output_fields=output_fields,
+                rerank=rerank,
             )
         else:
             hits = search_hybrid(
@@ -270,12 +324,19 @@ def search(req: SearchRequest) -> SearchResponse:
                 top_k=req.top_k,
                 vector_field=plan["schema"]["vector_field"],
                 sparse_field=plan["schema"].get("sparse_field") or "sparse",
-                output_fields=[text_field],
+                filter=filter_expr,
+                output_fields=output_fields,
+                rerank=rerank,
             )
     except SparseUnavailable as e:
         raise HTTPException(status_code=400, detail=e.to_dict()) from e
     except LaunchpadError as e:
         raise HTTPException(status_code=400, detail=e.to_dict()) from e
+    except MilvusException as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "bad_filter", "message": str(e)},
+        ) from e
 
     return SearchResponse(
         mode=req.mode,

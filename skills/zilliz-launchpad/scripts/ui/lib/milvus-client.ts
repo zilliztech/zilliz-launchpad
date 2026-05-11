@@ -5,6 +5,8 @@ export interface SearchRequest {
   query: string;
   top_k?: number;
   mode?: SearchMode;
+  filter?: string;
+  rerank?: string;
 }
 
 export interface Hit {
@@ -44,6 +46,7 @@ export interface InfoResponse {
   has_thumbnails: boolean;
   video_static_prefix?: string | null;
   data_shape?: string | null;
+  default_reranker?: string | null;
 }
 
 export interface VideoFramesRequest {
