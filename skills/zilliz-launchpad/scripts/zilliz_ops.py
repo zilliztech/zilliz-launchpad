@@ -173,8 +173,39 @@ def execute(
         "--frame-progress",
         help="Emit one log line per frame batch during video ingest (noisy).",
     ),
+    append: bool = typer.Option(
+        False,
+        "--append",
+        help="Append --input rows to the run-dir's existing collection; writes execute_append.json",
+    ),
 ) -> None:
     """Phase 4 — apply plan and start UI sidecar."""
+    if append:
+        if run_dir is None or input is None:
+            print(
+                json.dumps(
+                    {
+                        "code": "missing_input",
+                        "message": "--append requires both --run-dir and --input",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=2)
+        out = resolve_run_dir(run_dir)
+        try:
+            report = phase_execute.run_execute_append(
+                out_dir=out,
+                input_path=str(input),
+            )
+        except LaunchpadError as e:
+            _fail(e)
+        typer.echo(f"run-dir: {out}")
+        typer.echo(f"collection: {report['collection']}")
+        typer.echo(f"appended_rows: {report['appended_rows']}")
+        typer.echo(f"artifact: {report['artifact_path']}")
+        return
+
     if prefetch_models:
         from lib.embeddings import prefetch_clip
 

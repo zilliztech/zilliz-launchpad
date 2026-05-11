@@ -366,7 +366,7 @@ Skill edits the embedding section of `configure.json` in the active run dir, rer
 
 > *"I already ran the launchpad on `docs_v1.jsonl` last week. Now I have `docs_v2.jsonl` — append it to the same collection."*
 
-Skill reuses the previous run dir's plan (preserving schema) and runs only `execute --input docs_v2.jsonl`. If the new file's fields don't match the planned schema, it stops with `schema_conflict` and tells you how to resolve it.
+Skill runs `execute --append --run-dir <previous-run-dir> --input docs_v2.jsonl`. The append path reuses `plan.json` (no re-plan), confirms the live collection schema matches, and upserts only the new rows. Results land in a fresh `execute_append.json` artifact so the original `execute.json` stays untouched (and a second append produces `execute_append.2.json`, etc.). If the new file's fields don't match the planned schema, it stops with `schema_conflict` and tells you how to resolve it.
 
 ### 7. Recover from `schema_conflict`
 
