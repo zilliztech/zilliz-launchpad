@@ -187,7 +187,7 @@ def _scalar_output_fields(plan: dict[str, Any]) -> list[str]:
         name = extra.get("name") if isinstance(extra, dict) else None
         if not isinstance(name, str) or not name or name in seen:
             continue
-        if name == vector_field or name == sparse_field:
+        if name in (vector_field, sparse_field):
             continue
         names.append(name)
         seen.add(name)
