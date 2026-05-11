@@ -938,7 +938,8 @@ def _read_plan_or_raise(out_dir: Path) -> dict[str, Any]:
             pointer=str(plan_path),
             reason="plan.json is missing; run `plan` before `execute --append`",
         )
-    return json.loads(plan_path.read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads(plan_path.read_text(encoding="utf-8"))
+    return data
 
 
 def _verify_existing_schema(
