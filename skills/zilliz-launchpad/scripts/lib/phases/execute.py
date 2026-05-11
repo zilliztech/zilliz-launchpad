@@ -941,7 +941,9 @@ def _read_plan_or_raise(out_dir: Path) -> dict[str, Any]:
     return json.loads(plan_path.read_text(encoding="utf-8"))
 
 
-def _verify_existing_schema(client: PyMilvusClient, collection: str, plan_schema: dict[str, Any]) -> None:
+def _verify_existing_schema(
+    client: PyMilvusClient, collection: str, plan_schema: dict[str, Any]
+) -> None:
     """Raise SchemaConflictError if the live collection does not match the plan schema."""
     if not collection_exists(client, collection):
         raise SchemaConflictError(
