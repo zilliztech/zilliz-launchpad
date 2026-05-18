@@ -18,9 +18,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import typer
 from pymilvus import MilvusClient as _PyMilvusClient
 
 from .. import zilliz_cli
+from ..cli import fail as _cli_fail
 from ..client import Backend, MilvusClient, detect_target
 from ..credentials import resolve as resolve_credential
 from ..deployer import (
@@ -40,7 +42,12 @@ from ..errors import (
     InvalidProfileError,
     LaunchpadError,
 )
-from ..run_dir import load_configure, load_plan, preflight_execute_artifact
+from ..run_dir import (
+    load_configure,
+    load_plan,
+    preflight_execute_artifact,
+    resolve_run_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -336,3 +343,49 @@ def _stop_local_sidecar(run_dir: Path) -> None:
     except (ProcessLookupError, PermissionError) as exc:
         logger.warning("could not stop sidecar pid=%s: %s", pid, exc)
     pid_file.unlink(missing_ok=True)
+
+
+def register(app: typer.Typer) -> None:
+    """Attach the Phase 6 ``deploy`` subcommand to the shared app."""
+
+    @app.command()
+    def deploy(
+        run_dir: str | None = typer.Option(None, "--run-dir"),
+        cluster_id: str | None = typer.Option(
+            None, "--cluster-id", help="Target an existing RUNNING cluster"
+        ),
+        create: bool = typer.Option(
+            False, "--create", help="Provision a new cluster via `zilliz cluster create`"
+        ),
+        confirm: bool = typer.Option(
+            False, "--confirm", help="Required with --create to acknowledge billing impact"
+        ),
+        stop_local: bool = typer.Option(
+            False, "--stop-local", help="Stop the Phase 4 local UI sidecar after deploy"
+        ),
+    ) -> None:
+        """Phase 6 — promote the Execute run to Zilliz Cloud."""
+        out = resolve_run_dir(run_dir)
+        try:
+            report = run_deploy(
+                out_dir=out,
+                cluster_id=cluster_id,
+                create=create,
+                confirm=confirm,
+                stop_local=stop_local,
+            )
+        except LaunchpadError as e:
+            _cli_fail(e)
+        typer.echo(f"run-dir: {out}")
+        typer.echo(f"cluster: {report['cluster_id']} ({report['cluster_uri']})")
+        typer.echo(f"collection: {report['collection_name']}")
+        typer.echo(
+            f"ingest: {report['ingest_mode']} "
+            f"({report['ingest_row_count']} rows, status={report['ingest_status']})"
+        )
+        obs = report.get("observability") or {}
+        if obs.get("grafana_dashboard"):
+            typer.echo(f"grafana: {obs['grafana_dashboard']}")
+        if obs.get("prometheus_url"):
+            typer.echo(f"prometheus: {obs['prometheus_url']}")
+        typer.echo(f"deploy.json: {out / 'deploy.json'}")

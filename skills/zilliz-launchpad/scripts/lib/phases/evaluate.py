@@ -16,12 +16,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import typer
+
+from ..cli import fail as _cli_fail
 from ..client import Backend, MilvusClient, detect_target
 from ..embeddings import embed_text_with_clip, make_embedder
 from ..errors import (
     BackendUnsupportedError,
     InvalidProfileError,
     JudgeUnavailableError,
+    LaunchpadError,
     QrelsMissingError,
 )
 from ..evaluator import (
@@ -32,7 +36,7 @@ from ..evaluator import (
     compute_retrieval_metrics,
     derive_queries_from_corpus,
 )
-from ..run_dir import load_plan, preflight_execute_artifact
+from ..run_dir import load_plan, preflight_execute_artifact, resolve_run_dir
 from ..search import search_dense, search_hybrid, search_image_to_image
 from ..vision_judge import caption_images, is_vision_capable
 from .execute import _iter_documents
@@ -1281,3 +1285,86 @@ def _refuse_milvus_lite(uri: str, backend: Backend) -> None:
             uri=uri,
             feature="Milvus Lite target — Phase 5 needs Standalone or Cloud",
         )
+
+
+def register(app: typer.Typer) -> None:
+    """Attach the Phase 5 ``evaluate`` subcommand to the shared app."""
+
+    @app.command()
+    def evaluate(
+        run_dir: str | None = typer.Option(None, "--run-dir"),
+        qrels: Path | None = typer.Option(  # noqa: B008
+            None, "--qrels", help="JSONL with {query, relevant_ids[]}"
+        ),
+        queries: Path | None = typer.Option(  # noqa: B008
+            None, "--queries", help="Plain query list, one per line"
+        ),
+        query_image: Path | None = typer.Option(  # noqa: B008
+            None,
+            "--query-image",
+            help="Image collections only: run a one-shot similarity smoke and print top-k",
+        ),
+        concurrency: int = typer.Option(1, "--concurrency", min=1, max=64),
+        judge_llm: str | None = typer.Option(
+            None, "--judge-llm", help="<provider>:<model> — enables ragas metrics"
+        ),
+        compare: Path | None = typer.Option(  # noqa: B008
+            None, "--compare", help="variants.yaml for comparison mode"
+        ),
+        allow_large: bool = typer.Option(False, "--allow-large", help="Override the 6-variant cap"),
+    ) -> None:
+        """Phase 5 — score retrieval/latency/RAG quality against the live collection."""
+        out = resolve_run_dir(run_dir)
+        if query_image is not None and qrels is not None:
+            _cli_fail(
+                InvalidProfileError(
+                    pointer="cli",
+                    reason="--query-image is a smoke tool and cannot be combined with --qrels",
+                )
+            )
+        if query_image is not None:
+            try:
+                rows = run_query_image_smoke(out_dir=out, query_image_path=str(query_image))
+            except LaunchpadError as e:
+                _cli_fail(e)
+            typer.echo(f"run-dir: {out}")
+            typer.echo(f"query-image: {query_image}")
+            if not rows:
+                typer.echo("(no hits)")
+                return
+            for rank, row in enumerate(rows, start=1):
+                typer.echo(f"  {rank:>2}. score={row['score']:.4f}  {row['id']}")
+            return
+        try:
+            report = run_evaluate(
+                out_dir=out,
+                qrels_path=str(qrels) if qrels else None,
+                queries_path=str(queries) if queries else None,
+                concurrency=concurrency,
+                judge_llm=judge_llm,
+                compare_path=str(compare) if compare else None,
+                allow_large=allow_large,
+            )
+        except LaunchpadError as e:
+            _cli_fail(e)
+        typer.echo(f"run-dir: {out}")
+        typer.echo(f"queries: {report['query_count']} (derived={report['derived']})")
+        latency = report["latency_metrics"]
+        if latency.get("count"):
+            typer.echo(
+                f"latency: p50={latency['p50_ms']:.1f}ms "
+                f"p95={latency['p95_ms']:.1f}ms "
+                f"p99={latency['p99_ms']:.1f}ms"
+            )
+        retrieval = report["retrieval_metrics"]
+        if retrieval:
+            typer.echo(
+                f"retrieval: recall@10={retrieval['recall@10']:.3f} "
+                f"MRR@10={retrieval['MRR@10']:.3f} "
+                f"NDCG@10={retrieval['NDCG@10']:.3f}"
+            )
+        if report["rag_metrics"]:
+            typer.echo(f"rag: {json.dumps(report['rag_metrics'], sort_keys=True)}")
+        if report["variants"]:
+            typer.echo(f"variants scored: {len(report['variants'])}")
+        typer.echo(f"report: {out / 'eval_report.md'}")

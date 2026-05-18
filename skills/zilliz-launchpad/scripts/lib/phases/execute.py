@@ -12,11 +12,13 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import typer
 from pymilvus import CollectionSchema, DataType
 from pymilvus import MilvusClient as PyMilvusClient
 
 from .. import zilliz_cli
 from ..chunking import ChunkConfig, chunk_text
+from ..cli import fail as _cli_fail
 from ..client import Backend, MilvusClient, detect_target
 from ..embeddings import (
     EmbeddingProvider,
@@ -40,6 +42,7 @@ from ..operations import (
     create_index,
     load_collection,
 )
+from ..run_dir import resolve_run_dir
 from ..samples import load as load_sample
 from ..search import search_dense
 
@@ -1037,3 +1040,102 @@ def run_execute_append(
     )
     report["artifact_path"] = str(out_path)
     return report
+
+
+def register(app: typer.Typer) -> None:
+    """Attach the Phase 4 ``execute`` subcommand to the shared app."""
+
+    @app.command()
+    def execute(
+        run_dir: str | None = typer.Option(None, "--run-dir"),
+        sample: str | None = typer.Option(None, "--sample", "-s"),
+        input: Path | None = typer.Option(None, "--input", "-i"),  # noqa: B008
+        ui_port: int = typer.Option(8000, "--ui-port"),
+        no_ui: bool = typer.Option(False, "--no-ui", help="Skip starting the sidecar"),
+        prefetch_models: bool = typer.Option(
+            False,
+            "--prefetch-models",
+            help="Download CLIP / image-embedding weights without ingesting and exit.",
+        ),
+        frame_progress: bool = typer.Option(
+            False,
+            "--frame-progress",
+            help="Emit one log line per frame batch during video ingest (noisy).",
+        ),
+        append: bool = typer.Option(
+            False,
+            "--append",
+            help="Append --input rows to the run-dir's existing collection; "
+            "writes execute_append.json",
+        ),
+    ) -> None:
+        """Phase 4 — apply plan and start UI sidecar."""
+        if append:
+            if run_dir is None or input is None:
+                print(
+                    json.dumps(
+                        {
+                            "code": "missing_input",
+                            "message": "--append requires both --run-dir and --input",
+                        }
+                    ),
+                    file=sys.stderr,
+                )
+                raise typer.Exit(code=2)
+            out = resolve_run_dir(run_dir)
+            try:
+                report = run_execute_append(
+                    out_dir=out,
+                    input_path=str(input),
+                )
+            except LaunchpadError as e:
+                _cli_fail(e)
+            typer.echo(f"run-dir: {out}")
+            typer.echo(f"collection: {report['collection']}")
+            typer.echo(f"appended_rows: {report['appended_rows']}")
+            typer.echo(f"artifact: {report['artifact_path']}")
+            return
+
+        if prefetch_models:
+            from ..embeddings import prefetch_clip
+
+            try:
+                prefetch_clip()
+            except LaunchpadError as e:
+                _cli_fail(e)
+            typer.echo("✓ CLIP weights cached")
+            return
+
+        out = resolve_run_dir(run_dir)
+        try:
+            report = run_execute(
+                out_dir=out,
+                sample=sample,
+                input_path=str(input) if input else None,
+                ui_port=ui_port,
+                start_ui=not no_ui,
+                frame_progress=frame_progress,
+            )
+        except LaunchpadError as e:
+            _cli_fail(e)
+        typer.echo(f"run-dir: {out}")
+        typer.echo(f"collection: {report['collection_status']}")
+        typer.echo(f"index: {report['index_status']}")
+        typer.echo(f"ingest: {report['ingest']}")
+        if report.get("smoke_hits"):
+            top = report["smoke_hits"][0]
+            typer.echo(f"✓ Top-1: {top['id']} score={top['score']:.4f}")
+        elif report.get("ingest_path") in ("image-batch", "video-batch"):
+            typer.echo(f"({report['ingest_path']} — smoke query is best-effort)")
+        else:
+            typer.echo("✗ Smoke query returned zero hits")
+            raise typer.Exit(code=3)
+        if report.get("sidecar_pid"):
+            typer.echo(f"UI sidecar pid {report['sidecar_pid']} on port {report['ui_port']}")
+            typer.echo("Start the Next.js UI: (cd scripts/ui && pnpm install && pnpm dev)")
+        target_uri = report.get("target_uri", "")
+        if target_uri and "cloud.zilliz.com" not in target_uri:
+            typer.echo(
+                "Tip: run ./start_milvus.sh attu up to inspect the collection in Attu "
+                "(http://localhost:8000)"
+            )
