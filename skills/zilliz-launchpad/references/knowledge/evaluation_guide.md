@@ -17,6 +17,8 @@ If you have no qrels, Phase 5 degrades gracefully:
 - `--queries <path>` (one query per line) → latency only (no retrieval math, since there are no labels)
 - no flags → **derived mode**: the evaluator samples 25 docs from the corpus, takes the first sentence of each as the query, and treats the source doc as the (single) relevant id. The report is tagged `derived: true` so you know it's a smoke test not a real eval.
 
+> **Tip — harder derived queries:** because derived queries are verbatim substrings of the indexed text, recall@10 inflates to 0.95+ on every variant and the smoke number loses signal. Pass `--judge-llm <provider>:<model>` (e.g. `openai:gpt-4o-mini`) in derived mode and the evaluator rewrites each query through the LLM to be paraphrased — same intent, same ground-truth doc id, but no verbatim phrases — before measuring, so the number actually discriminates. Rewrites are cached at `runs/<id>/derived_queries.jsonl` keyed by source doc id, so a rerun reuses them and spends **zero** tokens. Without `--judge-llm`, derived mode is unchanged (verbatim first sentence, no LLM call). Requires the provider's API key in the env (missing key → `judge_unavailable`).
+
 ### Latency
 
 - `p50 / p95 / p99` in milliseconds, wall-clock, against the live collection
