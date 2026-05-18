@@ -4,10 +4,13 @@ A reranker takes the top `k*3` raw candidates from vector search and reorders th
 
 ## Supported in MVP
 
-| Adapter id                 | Backend             | Cost surface |
-| ---                        | ---                 | --- |
-| `cohere-rerank-3`          | Cohere Rerank 3     | Paid per 1k docs; 1k req/min free tier. |
-| `bge-reranker-v2-m3`       | Zilliz BYOM endpoint | Self-hosted; you control cost. |
+| Adapter id                 | Backend             | USD / 1k searches | Cost surface |
+| ---                        | ---                 | --- | --- |
+| `cohere-rerank-3`          | Cohere Rerank 3     | 2.00 | Paid per 1k docs; 1k req/min free tier. |
+| `bge-reranker-v2-m3`       | Zilliz BYOM endpoint | 0 | Self-hosted; you control cost (no per-call API spend). |
+
+> **Prices are advisory estimates** in USD per 1k rerank searches, used only to populate the
+> `cost/query` column of `eval_report.md`. Edit this one file to add an adapter or refresh a price.
 
 ## When to enable
 
