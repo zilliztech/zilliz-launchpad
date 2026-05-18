@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import difflib
 import json
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,10 +12,10 @@ from typing import Any
 import typer
 
 from ..cli import fail as _cli_fail
-from ..errors import LaunchpadError
+from ..errors import CliErrorEnvelope, InvalidProfileError, LaunchpadError
 from ..optional_deps import detect_device_hint
 from ..profile import load_profile
-from ..run_dir import resolve_run_dir
+from ..run_dir import previous_run_dir, resolve_run_dir
 
 DEFAULT_EMBEDDING = {
     "provider": "openai",
@@ -400,14 +402,52 @@ def run_plan(*, out_dir: Path) -> dict[str, Any]:
     return plan.to_dict()
 
 
-def register(app: typer.Typer) -> None:
-    """Attach the Phase 3 ``plan`` subcommand to the shared app."""
+def _diff_fail(err: LaunchpadError) -> None:
+    """Emit the standard error envelope but exit with code 2.
 
-    @app.command()
+    `plan diff` reserves exit code 1 for the clean "the two plans differ"
+    signal (git-diff style), so failures must use a distinct non-1 code
+    while still emitting the same JSON envelope the skill's remediation
+    map consumes.
+    """
+    print(CliErrorEnvelope.from_error(err).to_json(), file=sys.stderr)
+    raise typer.Exit(code=2)
+
+
+def _resolve_for_diff(arg: str | None) -> Path:
+    """Resolve a `plan diff` run-dir argument as a structured error path."""
+    try:
+        return resolve_run_dir(arg)
+    except FileNotFoundError as exc:
+        raise InvalidProfileError(
+            pointer=str(arg) if arg is not None else "<latest>",
+            reason=str(exc),
+        ) from exc
+
+
+def _plan_md_lines(run: Path) -> list[str]:
+    plan_md = run / "plan.md"
+    if not plan_md.exists():
+        raise InvalidProfileError(
+            pointer=str(plan_md),
+            reason="missing plan.md — run `plan` in this run dir first",
+        )
+    return plan_md.read_text(encoding="utf-8").splitlines(keepends=True)
+
+
+def register(app: typer.Typer) -> None:
+    """Attach the Phase 3 ``plan`` command group to the shared app."""
+
+    plan_app = typer.Typer(help="Phase 3 — produce plan.{json,md}.")
+
+    @plan_app.callback(invoke_without_command=True)
     def plan(
+        ctx: typer.Context,
         run_dir: str | None = typer.Option(None, "--run-dir"),
     ) -> None:
         """Phase 3 — produce plan.{json,md}."""
+        if ctx.invoked_subcommand is not None:
+            return
         out = resolve_run_dir(run_dir)
         try:
             result = run_plan(out_dir=out)
@@ -416,3 +456,44 @@ def register(app: typer.Typer) -> None:
         typer.echo(f"run-dir: {out}")
         typer.echo(f"index: {result['index']['type']} {result['index']['params']}")
         typer.echo(f"sparse: {result['sparse_enabled']}")
+
+    @plan_app.command("diff")
+    def plan_diff(
+        run_a: str | None = typer.Argument(None, help="New side (default: latest run)."),
+        run_b: str | None = typer.Argument(None, help="Old side (default: the run before run-a)."),
+    ) -> None:
+        """Unified diff of two run dirs' plan.md (run-b → run-a).
+
+        Exit 0 = identical, 1 = differ, 2 = error.
+        """
+        try:
+            new_run = _resolve_for_diff(run_a)
+            if run_b is not None:
+                old_run = _resolve_for_diff(run_b)
+            else:
+                prev = previous_run_dir(new_run)
+                if prev is None:
+                    raise InvalidProfileError(
+                        pointer=str(new_run),
+                        reason="no previous run to compare against — "
+                        "run `plan` again after editing configure.json",
+                    )
+                old_run = prev
+            old_lines = _plan_md_lines(old_run)
+            new_lines = _plan_md_lines(new_run)
+        except LaunchpadError as e:
+            _diff_fail(e)
+
+        if old_lines == new_lines:
+            raise typer.Exit(code=0)
+
+        diff = difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=f"{old_run.name}/plan.md",
+            tofile=f"{new_run.name}/plan.md",
+        )
+        sys.stdout.writelines(diff)
+        raise typer.Exit(code=1)
+
+    app.add_typer(plan_app, name="plan")
