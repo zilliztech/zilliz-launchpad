@@ -41,6 +41,7 @@ from ..search import search_dense, search_hybrid, search_image_to_image
 from ..vision_judge import caption_images, is_vision_capable
 from .execute import _iter_documents
 
+DERIVED_QUERIES_FILE = "derived_queries.jsonl"
 DERIVED_IMAGE_QUERIES_FILE = "derived_image_queries.jsonl"
 _DERIVED_IMAGE_SAMPLE_SIZE = 12  # vision API calls are expensive, keep modest
 DERIVED_VIDEO_QUERIES_FILE = "derived_video_queries.jsonl"
@@ -216,7 +217,7 @@ def _resolve_query_set(
         return _derive_video_queries(out_dir=out_dir, plan=plan, judge=judge), True
     if image:
         return _derive_image_queries(out_dir=out_dir, plan=plan, judge=judge), True
-    return _derive_queries(out_dir=out_dir, plan=plan), True
+    return _derive_queries(out_dir=out_dir, plan=plan, judge=judge), True
 
 
 def _load_video_qrels(path: Path) -> list[QueryWithExpectedIds]:
@@ -585,7 +586,9 @@ def _load_queries(path: Path) -> list[QueryWithExpectedIds]:
     return out
 
 
-def _derive_queries(*, out_dir: Path, plan: dict[str, Any]) -> list[QueryWithExpectedIds]:
+def _derive_queries(
+    *, out_dir: Path, plan: dict[str, Any], judge: JudgeConfig | None = None
+) -> list[QueryWithExpectedIds]:
     schema = plan["schema"]
     try:
         docs = list(_iter_documents(plan=plan, run_dir=out_dir, sample=None, input_path=None))
@@ -597,12 +600,66 @@ def _derive_queries(*, out_dir: Path, plan: dict[str, Any]) -> list[QueryWithExp
                 "pass --qrels or --queries, or re-run collect with --sample/--input"
             ),
         ) from exc
-    return derive_queries_from_corpus(
+    base = derive_queries_from_corpus(
         docs,
         text_field=schema["text_field"],
         id_field=schema["primary_key"],
         sample_size=_DERIVED_SAMPLE_SIZE,
     )
+    if judge is None:
+        # Verbatim path — no LLM, no cache file written.
+        return base
+    return _rewrite_derived_queries(base, out_dir=out_dir, judge=judge)
+
+
+def _rewrite_derived_queries(
+    base: list[QueryWithExpectedIds], *, out_dir: Path, judge: JudgeConfig
+) -> list[QueryWithExpectedIds]:
+    """Paraphrase each derived query through the judge LLM, caching results
+    in ``runs/<id>/derived_queries.jsonl`` keyed by source doc id so reruns
+    spend zero tokens. Rows whose rewrite is unavailable keep the verbatim
+    query (degrade, don't crash).
+    """
+    from ..query_rewrite import rewrite_query
+
+    cache_path = out_dir / DERIVED_QUERIES_FILE
+    cache: dict[str, str] = {}
+    if cache_path.exists():
+        for line in cache_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            doc_id = rec.get("doc_id")
+            rewritten = rec.get("rewritten")
+            if isinstance(doc_id, str) and isinstance(rewritten, str):
+                cache[doc_id] = rewritten
+
+    appended: list[dict[str, str]] = []
+    out: list[QueryWithExpectedIds] = []
+    for q in base:
+        doc_id = q.relevant_ids[0] if q.relevant_ids else None
+        if doc_id is not None and doc_id not in cache:
+            rewritten = rewrite_query(judge.provider, judge.model, q.query)
+            cache[doc_id] = rewritten
+            appended.append({"doc_id": doc_id, "original": q.query, "rewritten": rewritten})
+        new_query = cache.get(doc_id) if doc_id is not None else None
+        out.append(
+            QueryWithExpectedIds(
+                query=new_query or q.query,
+                relevant_ids=q.relevant_ids,
+                grade=q.grade,
+            )
+        )
+
+    if appended:
+        with cache_path.open("a", encoding="utf-8") as f:
+            for rec in appended:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return out
 
 
 # --- Per-variant evaluation ------------------------------------------------
