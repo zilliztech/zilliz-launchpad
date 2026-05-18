@@ -9,16 +9,19 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import typer
 from PIL import UnidentifiedImageError
 
 from .. import samples
-from ..errors import InvalidProfileError, MissingDependencyError
+from ..cli import fail as _cli_fail
+from ..errors import InvalidProfileError, LaunchpadError, MissingDependencyError
 from ..image_io import (
     IMAGE_SUFFIXES,
     THUMBNAIL_DEFAULT_CAP_ROWS,
     list_images,
     read_image_metadata,
 )
+from ..run_dir import new_run_dir, resolve_run_dir
 
 SUPPORTED_SUFFIXES = {".jsonl", ".ndjson", ".csv", ".txt", ".md", ".pdf"}
 SUPPORTED_DIR_SUFFIXES = IMAGE_SUFFIXES
@@ -508,3 +511,66 @@ def run_collect(
     with out.open("w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2, sort_keys=True)
     return result
+
+
+def register(app: typer.Typer) -> None:
+    """Attach the Phase 1 ``collect`` subcommand to the shared app."""
+
+    @app.command()
+    def collect(
+        sample: str | None = typer.Option(None, "--sample", "-s", help="Bundled sample name"),
+        input: Path | None = typer.Option(None, "--input", "-i", help="Path to user data"),  # noqa: B008
+        run_dir: str | None = typer.Option(
+            None, "--run-dir", help="Existing run dir; default = new"
+        ),
+        with_thumbnails: bool | None = typer.Option(
+            None,
+            "--with-thumbnails/--no-thumbnails",
+            help="Image dir only. Default: on for ≤5000 images, off above.",
+        ),
+        thumbnail_cap_rows: int = typer.Option(
+            5000,
+            "--thumbnail-cap-rows",
+            help="Image dir only. Auto-disable thumbnails above this many images.",
+        ),
+        split_markdown_headings: bool = typer.Option(
+            False,
+            "--split-markdown-headings/--no-split-markdown-headings",
+            help="Markdown only. Emit one record per `## ` section instead of one per file.",
+        ),
+    ) -> None:
+        """Phase 1 — analyze sample data."""
+        if sample is None and input is None:
+            print(
+                json.dumps({"code": "missing_input", "message": "Pass --sample or --input"}),
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=2)
+        out = resolve_run_dir(run_dir) if run_dir else new_run_dir(label="collect")
+        try:
+            result = run_collect(
+                input_path=str(input) if input else None,
+                sample=sample,
+                out_dir=out,
+                with_thumbnails=with_thumbnails,
+                thumbnail_cap_rows=thumbnail_cap_rows,
+                split_markdown_headings=split_markdown_headings,
+            )
+        except LaunchpadError as e:
+            _cli_fail(e)
+        typer.echo(f"run-dir: {out}")
+        shape = result.get("data_shape")
+        if shape == "image_dir":
+            typer.echo("data_shape: image_dir")
+            typer.echo(f"images: {result['record_count_estimate']}")
+            typer.echo(f"thumbnails_included: {result['thumbnails_included']}")
+        elif shape in ("markdown", "pdf"):
+            typer.echo(f"data_shape: {shape}")
+            typer.echo(f"records: {result['record_count_estimate']}")
+            typer.echo(f"suggested_primary_key: {result['suggested_primary_key']}")
+            typer.echo(f"suggested_text_field: {result['suggested_text_field']}")
+            for warning in result.get("warnings", []):
+                typer.echo(f"warning: {warning}", err=True)
+        else:
+            typer.echo(f"suggested_primary_key: {result['suggested_primary_key']}")
+            typer.echo(f"suggested_text_field: {result['suggested_text_field']}")

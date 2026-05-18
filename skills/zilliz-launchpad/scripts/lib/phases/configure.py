@@ -14,8 +14,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import typer
+
 from .. import zilliz_cli
+from ..cli import fail as _cli_fail
 from ..errors import InvalidProfileError, LaunchpadError
+from ..run_dir import latest_run_dir, new_run_dir, resolve_run_dir
 
 DEFAULTS: dict[str, Any] = {
     "use_case": "rag",
@@ -258,3 +262,47 @@ def run_configure(
     with out.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
     return data
+
+
+def register(app: typer.Typer) -> None:
+    """Attach the Phase 2 ``configure`` subcommand to the shared app."""
+
+    @app.command()
+    def configure(
+        from_json: Path | None = typer.Option(None, "--from-json", help="Pre-filled answers"),  # noqa: B008
+        run_dir: str | None = typer.Option(None, "--run-dir"),
+        use_case: str | None = typer.Option(None, "--use-case"),
+        dataset_size: int | None = typer.Option(None, "--dataset-size"),
+        deployment_target: str | None = typer.Option(None, "--deployment"),
+        hybrid_preference: str | None = typer.Option(None, "--hybrid"),
+        reranker_preference: str | None = typer.Option(None, "--reranker"),
+        frame_interval_seconds: float | None = typer.Option(None, "--frame-interval-seconds"),
+        max_frames_per_video: int | None = typer.Option(None, "--max-frames-per-video"),
+        sampling_strategy: str | None = typer.Option(None, "--sampling-strategy"),
+        scene_threshold: float | None = typer.Option(None, "--scene-threshold"),
+    ) -> None:
+        """Phase 2 — capture requirements."""
+        out = (
+            resolve_run_dir(run_dir)
+            if run_dir
+            else (latest_run_dir() or new_run_dir(label="configure"))
+        )
+        overrides = {
+            "use_case": use_case,
+            "dataset_size": dataset_size,
+            "deployment_target": deployment_target,
+            "hybrid_preference": hybrid_preference,
+            "reranker_preference": reranker_preference,
+            "frame_interval_seconds": frame_interval_seconds,
+            "max_frames_per_video": max_frames_per_video,
+            "sampling_strategy": sampling_strategy,
+            "scene_threshold": scene_threshold,
+        }
+        try:
+            data = run_configure(
+                from_json=str(from_json) if from_json else None, out_dir=out, overrides=overrides
+            )
+        except LaunchpadError as e:
+            _cli_fail(e)
+        typer.echo(f"run-dir: {out}")
+        typer.echo(f"deployment_target: {data['deployment_target']}")

@@ -7,8 +7,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import typer
+
+from ..cli import fail as _cli_fail
+from ..errors import LaunchpadError
 from ..optional_deps import detect_device_hint
 from ..profile import load_profile
+from ..run_dir import resolve_run_dir
 
 DEFAULT_EMBEDDING = {
     "provider": "openai",
@@ -393,3 +398,21 @@ def run_plan(*, out_dir: Path) -> dict[str, Any]:
     )
     (out_dir / "plan.md").write_text(_plan_to_markdown(plan), encoding="utf-8")
     return plan.to_dict()
+
+
+def register(app: typer.Typer) -> None:
+    """Attach the Phase 3 ``plan`` subcommand to the shared app."""
+
+    @app.command()
+    def plan(
+        run_dir: str | None = typer.Option(None, "--run-dir"),
+    ) -> None:
+        """Phase 3 — produce plan.{json,md}."""
+        out = resolve_run_dir(run_dir)
+        try:
+            result = run_plan(out_dir=out)
+        except LaunchpadError as e:
+            _cli_fail(e)
+        typer.echo(f"run-dir: {out}")
+        typer.echo(f"index: {result['index']['type']} {result['index']['params']}")
+        typer.echo(f"sparse: {result['sparse_enabled']}")
