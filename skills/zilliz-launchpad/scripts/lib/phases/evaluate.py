@@ -36,6 +36,7 @@ from ..evaluator import (
     compute_retrieval_metrics,
     derive_queries_from_corpus,
 )
+from ..pricing import cost_per_query as _cost_per_query
 from ..run_dir import load_plan, preflight_execute_artifact, resolve_run_dir
 from ..search import search_dense, search_hybrid, search_image_to_image
 from ..vision_judge import caption_images, is_vision_capable
@@ -671,6 +672,7 @@ class _RowResult:
     retrieval: dict[str, float] = field(default_factory=dict)
     latency: dict[str, float] = field(default_factory=dict)
     rag: dict[str, float] | None = None
+    cost: dict[str, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -678,6 +680,7 @@ class _RowResult:
             "retrieval": self.retrieval,
             "latency": self.latency,
             "rag": self.rag,
+            "cost": self.cost,
         }
 
 
@@ -751,7 +754,16 @@ def _evaluate_single(
     )
     rag = _maybe_rag(judge, queries, retrieved_texts) if judge else None
 
-    row = _RowResult(label=label, retrieval=retrieval, latency=latency, rag=rag)
+    cost_val = _cost_per_query(
+        queries=[q.query for q in queries],
+        provider=plan["embedding"]["provider"],
+        model=plan["embedding"]["model"],
+        reranker=plan.get("reranker"),
+        top_k=_TOP_K,
+    )
+    cost = {"cost_per_query": cost_val} if cost_val is not None else None
+
+    row = _RowResult(label=label, retrieval=retrieval, latency=latency, rag=rag, cost=cost)
     return row.to_dict()
 
 
@@ -1223,6 +1235,7 @@ def _build_report(
     derived: bool,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
+        "cost_metrics": base_row.get("cost"),
         "derived": derived,
         "latency_metrics": base_row["latency"],
         "query_count": len(queries),
@@ -1265,10 +1278,13 @@ def _render_markdown(report: dict[str, Any]) -> str:
             report["retrieval_metrics"],
             report["latency_metrics"],
             report["rag_metrics"],
+            report.get("cost_metrics"),
         )
     )
     for v in report["variants"]:
-        lines.append(_decision_row(v["label"], v["retrieval"], v["latency"], v["rag"]))
+        lines.append(
+            _decision_row(v["label"], v["retrieval"], v["latency"], v["rag"], v.get("cost"))
+        )
 
     if report["derived"]:
         lines += [
@@ -1291,15 +1307,16 @@ def _decision_row(
     retrieval: dict[str, float],
     latency: dict[str, float],
     rag: dict[str, float] | None,
+    cost: dict[str, float] | None,
 ) -> str:
     recall = retrieval.get("recall@10")
     p95 = latency.get("p95_ms")
     faith = (rag or {}).get("faithfulness")
+    cpq = (cost or {}).get("cost_per_query")
     recall_cell = f"{recall:.3f}" if recall is not None else "—"
     p95_cell = f"{p95:.1f}" if p95 is not None else "—"
     faith_cell = f"{faith:.3f}" if faith is not None else "—"
-    # cost/query is a placeholder until Phase 5 wires a real cost estimator
-    cost_cell = "—"
+    cost_cell = f"${cpq:.6f}" if cpq is not None else "—"
     return f"| {label} | {recall_cell} | {p95_cell} | {faith_cell} | {cost_cell} |"
 
 
