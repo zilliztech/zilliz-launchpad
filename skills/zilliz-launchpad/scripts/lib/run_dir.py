@@ -34,6 +34,22 @@ def latest_run_dir() -> Path | None:
     return candidates[-1] if candidates else None
 
 
+def previous_run_dir(run: Path) -> Path | None:
+    """Return the run dir immediately preceding ``run`` in sorted order.
+
+    Sorting is by full directory name; the UTC-timestamp prefix dominates,
+    so this is "the run before this one chronologically." Returns ``None``
+    when ``run`` is the first run dir or is not among the known run dirs.
+    """
+    run = run.resolve()
+    candidates = sorted(p.resolve() for p in runs_root().iterdir() if p.is_dir())
+    try:
+        idx = candidates.index(run)
+    except ValueError:
+        return None
+    return candidates[idx - 1] if idx > 0 else None
+
+
 def resolve_run_dir(arg: str | None) -> Path:
     """`arg` may be `None` (→ latest), a relative path, or an absolute path."""
     if arg is None:
