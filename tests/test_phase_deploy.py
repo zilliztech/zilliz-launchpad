@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 from lib.errors import DestructiveWithoutConfirmError, InvalidProfileError
-from lib.phases.deploy import _resolve_cluster_precedence, _write_observability_snapshot
+from lib.phases.deploy import (
+    _emit_deploy_summary,
+    _open_or_print,
+    _resolve_cluster_precedence,
+    _write_observability_snapshot,
+)
 
 
 def test_precedence_rejects_cluster_id_and_create_together():
@@ -111,6 +116,118 @@ def test_observability_snapshot_extends_existing_file(tmp_path: Path):
     assert data["deploy_snapshots"][1]["cluster_id"] == "c-new"
     # latency_samples from an earlier evaluate run must survive
     assert data["latency_samples"] == [{"source": "evaluate"}]
+
+
+# --- --open-dashboard ----------------------------------------------------
+
+
+def _report(
+    *,
+    grafana: str | None = "https://grafana.example/dashboard/abc",
+    prometheus: str | None = None,
+) -> dict:
+    return {
+        "cluster_id": "c-1",
+        "cluster_uri": "https://in03.api.gcp.zillizcloud.com",
+        "collection_name": "coll",
+        "ingest_mode": "client",
+        "ingest_row_count": 100,
+        "ingest_status": "complete",
+        "observability": {
+            "grafana_dashboard": grafana,
+            "prometheus_url": prometheus,
+        },
+    }
+
+
+def test_open_dashboard_invokes_opener(tmp_path: Path):
+    calls: list[str] = []
+    lines: list[str] = []
+
+    _emit_deploy_summary(
+        _report(),
+        tmp_path,
+        open_dashboard=True,
+        opener=lambda url: calls.append(url) or True,
+        echo=lines.append,
+    )
+    assert calls == ["https://grafana.example/dashboard/abc"]
+    assert any(line == "dashboard: https://grafana.example/dashboard/abc" for line in lines)
+
+
+def test_open_dashboard_headless_falls_back_to_print(tmp_path: Path):
+    lines: list[str] = []
+    _emit_deploy_summary(
+        _report(),
+        tmp_path,
+        open_dashboard=True,
+        opener=lambda _url: False,
+        echo=lines.append,
+    )
+    assert any(
+        line == "open this in your browser: https://grafana.example/dashboard/abc" for line in lines
+    )
+
+
+def test_open_dashboard_no_grafana_prints_prometheus(tmp_path: Path):
+    calls: list[str] = []
+    lines: list[str] = []
+    _emit_deploy_summary(
+        _report(grafana=None, prometheus="http://localhost:9091/metrics"),
+        tmp_path,
+        open_dashboard=True,
+        opener=lambda url: calls.append(url) or True,
+        echo=lines.append,
+    )
+    assert calls == []  # opener never called when no Grafana URL
+    assert any("no Grafana dashboard available" in line for line in lines)
+    assert any(line == "prometheus metrics: http://localhost:9091/metrics" for line in lines)
+
+
+def test_open_dashboard_opener_exception_does_not_fail(tmp_path: Path):
+    lines: list[str] = []
+
+    def boom(_url: str) -> bool:
+        raise RuntimeError("no display configured")
+
+    _emit_deploy_summary(
+        _report(),
+        tmp_path,
+        open_dashboard=True,
+        opener=boom,
+        echo=lines.append,
+    )
+    # Falls through to the print fallback
+    assert any(
+        line == "open this in your browser: https://grafana.example/dashboard/abc" for line in lines
+    )
+
+
+def test_summary_without_flag_prints_dashboard_line_but_does_not_open(tmp_path: Path):
+    calls: list[str] = []
+    lines: list[str] = []
+    _emit_deploy_summary(
+        _report(),
+        tmp_path,
+        open_dashboard=False,
+        opener=lambda url: calls.append(url) or True,
+        echo=lines.append,
+    )
+    assert calls == []
+    # Grafana URL still shown on its own line so user can click it
+    assert any(line == "dashboard: https://grafana.example/dashboard/abc" for line in lines)
+
+
+def test_open_or_print_warns_and_prints_on_exception(caplog):
+    lines: list[str] = []
+
+    def boom(_url: str) -> bool:
+        raise RuntimeError("nope")
+
+    with caplog.at_level("WARNING"):
+        _open_or_print("https://x.example", opener=boom, echo=lines.append)
+    assert lines == ["open this in your browser: https://x.example"]
+    assert any("webbrowser.open failed" in rec.message for rec in caplog.records)
 
 
 def test_observability_snapshot_recovers_from_corrupt_file(tmp_path: Path):

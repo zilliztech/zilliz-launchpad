@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import webbrowser
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -345,6 +347,60 @@ def _stop_local_sidecar(run_dir: Path) -> None:
     pid_file.unlink(missing_ok=True)
 
 
+def _open_or_print(
+    url: str,
+    *,
+    opener: Callable[[str], bool] = webbrowser.open,
+    echo: Callable[[str], Any] = typer.echo,
+) -> None:
+    """Try to open ``url`` in the user's browser; print it on any failure.
+
+    A browser hiccup must never turn a successful deploy into a failed run,
+    so exceptions and a ``False`` return both fall through to a clear print.
+    """
+    opened = False
+    try:
+        opened = bool(opener(url))
+    except Exception as exc:
+        logger.warning("webbrowser.open failed: %s", exc)
+    if not opened:
+        echo(f"open this in your browser: {url}")
+
+
+def _emit_deploy_summary(
+    report: dict[str, Any],
+    out_dir: Path,
+    *,
+    open_dashboard: bool,
+    opener: Callable[[str], bool] = webbrowser.open,
+    echo: Callable[[str], Any] = typer.echo,
+) -> None:
+    echo(f"run-dir: {out_dir}")
+    echo(f"cluster: {report['cluster_id']} ({report['cluster_uri']})")
+    echo(f"collection: {report['collection_name']}")
+    echo(
+        f"ingest: {report['ingest_mode']} "
+        f"({report['ingest_row_count']} rows, status={report['ingest_status']})"
+    )
+    obs = report.get("observability") or {}
+    grafana = obs.get("grafana_dashboard")
+    prometheus = obs.get("prometheus_url")
+    if grafana:
+        echo(f"dashboard: {grafana}")
+    if prometheus:
+        echo(f"prometheus: {prometheus}")
+    echo(f"deploy.json: {out_dir / 'deploy.json'}")
+
+    if not open_dashboard:
+        return
+    if grafana:
+        _open_or_print(grafana, opener=opener, echo=echo)
+    else:
+        echo("no Grafana dashboard available for this deploy target")
+        if prometheus:
+            echo(f"prometheus metrics: {prometheus}")
+
+
 def register(app: typer.Typer) -> None:
     """Attach the Phase 6 ``deploy`` subcommand to the shared app."""
 
@@ -363,6 +419,11 @@ def register(app: typer.Typer) -> None:
         stop_local: bool = typer.Option(
             False, "--stop-local", help="Stop the Phase 4 local UI sidecar after deploy"
         ),
+        open_dashboard: bool = typer.Option(
+            False,
+            "--open-dashboard",
+            help="Open the Grafana dashboard in your default browser after a successful deploy",
+        ),
     ) -> None:
         """Phase 6 — promote the Execute run to Zilliz Cloud."""
         out = resolve_run_dir(run_dir)
@@ -376,16 +437,4 @@ def register(app: typer.Typer) -> None:
             )
         except LaunchpadError as e:
             _cli_fail(e)
-        typer.echo(f"run-dir: {out}")
-        typer.echo(f"cluster: {report['cluster_id']} ({report['cluster_uri']})")
-        typer.echo(f"collection: {report['collection_name']}")
-        typer.echo(
-            f"ingest: {report['ingest_mode']} "
-            f"({report['ingest_row_count']} rows, status={report['ingest_status']})"
-        )
-        obs = report.get("observability") or {}
-        if obs.get("grafana_dashboard"):
-            typer.echo(f"grafana: {obs['grafana_dashboard']}")
-        if obs.get("prometheus_url"):
-            typer.echo(f"prometheus: {obs['prometheus_url']}")
-        typer.echo(f"deploy.json: {out / 'deploy.json'}")
+        _emit_deploy_summary(report, out, open_dashboard=open_dashboard)
