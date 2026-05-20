@@ -30,6 +30,12 @@ multimodal = [
 documents = [
     "pypdf>=4",
 ]
+mcp = [
+    "mcp>=1.0",
+]
+
+[project.scripts]
+zilliz-launchpad-mcp = "launchpad_mcp.server:main"
 
 [dependency-groups]
 dev = [
@@ -51,6 +57,7 @@ select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+mypy_path = "skills/zilliz-launchpad/scripts"
 exclude = ["skills/zilliz-launchpad/scripts/ui", "skills/zilliz-launchpad/scripts/runs", "tests/fixtures"]
 
 [[tool.mypy.overrides]]

@@ -54,6 +54,20 @@ npx skills add zilliztech/zilliz-launchpad --list
 
 Other agent flags include `-a copilot-cli`, `-a gemini-cli`, `-a cursor`, `-a opencode`, and `-a codex`.
 
+### MCP install path
+
+For non-skill-aware hosts (Cursor, Claude Desktop, generic MCP clients), the launchpad
+also ships an MCP server that exposes the same six phases as MCP tools. Install the
+`mcp` extra and launch the stdio server:
+
+```bash
+uv sync --extra mcp
+uv run python -m launchpad_mcp.server
+```
+
+See [`mcp/README.md`](mcp/README.md) for the full tool catalog, the structured error
+envelope, and a host-registration snippet.
+
 ### Preflight (optional)
 
 The skill drives these on demand, but you can do them ahead of time to skip a few conversational round-trips:
