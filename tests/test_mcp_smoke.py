@@ -17,7 +17,13 @@ from typing import Any
 
 import pytest
 
-mcp_sdk = pytest.importorskip("mcp", reason="install with: uv sync --extra mcp")
+# Target a deep SDK module rather than the bare `mcp` package: the repo's
+# `mcp/` docs directory is picked up as a namespace package, so the bare
+# import succeeds even without the SDK installed and the skip never fires.
+pytest.importorskip(
+    "mcp.server.fastmcp",
+    reason="MCP SDK not installed — `uv sync --extra mcp`",
+)
 
 import lib.run_dir as _run_dir_mod  # noqa: E402  (after importorskip)
 
