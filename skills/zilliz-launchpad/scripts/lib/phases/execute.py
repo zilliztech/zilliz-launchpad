@@ -28,12 +28,14 @@ from ..embeddings import (
 )
 from ..errors import (
     ClusterNotReadyError,
+    EmptyInputSetError,
     InvalidProfileError,
     LaunchpadError,
     MissingCredentialError,
     SchemaConflictError,
 )
 from ..ingest import ingest_documents
+from ..inputs import has_glob_chars, resolve_inputs
 from ..operations import (
     _classify_diff,
     build_basic_schema,
@@ -92,19 +94,53 @@ def _schema_from_plan(plan_schema: dict[str, Any]) -> CollectionSchema:
     )
 
 
+_JSONL_SUFFIXES = frozenset({".jsonl", ".ndjson"})
+
+
+def _read_jsonl_file(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _resolve_execute_inputs(raw: str) -> list[Path]:
+    """Resolve a `--input` value to a sorted list of JSONL/NDJSON files.
+
+    Reuses the shared `resolve_inputs` helper but tightens the suffix filter,
+    because execute's ingestion path consumes only line-delimited JSON today.
+    """
+    files = resolve_inputs(raw, supported_suffixes=_JSONL_SUFFIXES)
+    # Belt-and-suspenders: when raw is a single file we passed-through above,
+    # resolve_inputs intentionally skips the suffix check. Enforce it here.
+    if not files:
+        raise EmptyInputSetError(
+            raw=raw,
+            reason=f"no JSONL/NDJSON files in {raw}",
+        )
+    bad = [p for p in files if p.suffix.lower() not in _JSONL_SUFFIXES]
+    if bad:
+        raise EmptyInputSetError(
+            raw=raw,
+            reason=(
+                f"execute --input accepts only .jsonl/.ndjson files; "
+                f"got unsupported suffix(es): {[p.name for p in bad]}"
+            ),
+        )
+    return files
+
+
 def _iter_documents(
     plan: dict[str, Any], run_dir: Path, sample: str | None, input_path: str | None
 ) -> Iterator[dict[str, Any]]:
+    """Single-pass iterator (legacy path; preserved for callers that don't need resume)."""
     if sample:
         yield from load_sample(sample)
         return
     if input_path:
-        path = Path(input_path)
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    yield json.loads(line)
+        for path in _resolve_execute_inputs(input_path):
+            yield from _read_jsonl_file(path)
         return
     # try to infer from collect.json
     collect = json.loads((run_dir / "collect.json").read_text(encoding="utf-8"))
@@ -112,16 +148,63 @@ def _iter_documents(
     if src:
         yield from load_sample(src)
         return
+    src_files = collect.get("source_files")
+    if src_files:
+        for entry in src_files:
+            p = Path(entry["path"])
+            if p.suffix.lower() in _JSONL_SUFFIXES:
+                yield from _read_jsonl_file(p)
+        return
     src_path = collect.get("source_path")
     if src_path:
-        path = Path(src_path)
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    yield json.loads(line)
+        yield from _read_jsonl_file(Path(src_path))
         return
     raise RuntimeError("No data source — provide --sample or --input, or run collect with one.")
+
+
+def iter_collect_sources(collect: dict[str, Any]) -> list[Path]:
+    """Return the list of input file paths referenced by collect.json.
+
+    Prefers the new `source_files[]` (multi-file), falls back to the legacy
+    singular `source_path`. Empty list when neither is present (e.g. samples).
+    """
+    src_files = collect.get("source_files")
+    if src_files:
+        return [Path(entry["path"]) for entry in src_files]
+    src_path = collect.get("source_path")
+    if src_path:
+        return [Path(src_path)]
+    return []
+
+
+def _execute_input_files(input_path: str | None, run_dir: Path) -> list[Path] | None:
+    """Return resolved files for multi-file execute, or None when not applicable.
+
+    Returns None for the sample path and for legacy single-file inputs that
+    should keep their existing in-memory single-pass behavior.
+    """
+    if input_path is None:
+        return None
+    raw = input_path
+    if has_glob_chars(raw):
+        return _resolve_execute_inputs(raw)
+    p = Path(raw)
+    if p.is_dir():
+        return _resolve_execute_inputs(raw)
+    # Single file: stay on the legacy single-pass path.
+    return None
+
+
+def _load_prior_execute_snapshot(out_dir: Path) -> tuple[set[str], list[str]]:
+    """Return (already_processed_abs_paths, warnings_carried_forward)."""
+    snap = out_dir / "execute.json"
+    if not snap.exists():
+        return set(), []
+    try:
+        prior = json.loads(snap.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set(), []
+    return set(prior.get("processed_files") or []), list(prior.get("warnings") or [])
 
 
 def _cluster_preflight(cluster_id: str) -> dict[str, Any]:
@@ -751,6 +834,119 @@ def _run_video_execute(
     return report
 
 
+def _run_text_execute_multi_file(
+    *,
+    client: PyMilvusClient,
+    plan: dict[str, Any],
+    files: list[Path],
+    out_dir: Path,
+    embedder: EmbeddingProvider,
+    chunk_config: ChunkConfig,
+    extra_keys: tuple[str, ...],
+    coll_status: str,
+    idx_status: str,
+    ui_port: int,
+    start_ui: bool,
+    preflight: dict[str, Any] | None,
+    cluster_id: str | None,
+) -> dict[str, Any]:
+    """Per-file streaming ingest with resume support for JSONL/NDJSON inputs."""
+    processed_set, warnings = _load_prior_execute_snapshot(out_dir)
+    file_paths = [str(p) for p in files]
+    pending = [p for p in files if str(p) not in processed_set]
+
+    # Stale entry detection: anything in prior processed_files[] that points
+    # to a path no longer on disk.
+    for entry in list(processed_set):
+        if not Path(entry).exists():
+            warnings.append(f"prior processed file no longer exists: {entry}")
+
+    totals = {"documents": 0, "chunks": 0, "batches": 0, "retries": 0}
+    last_sample_query = ""
+    for file_path in pending:
+        docs = list(_read_jsonl_file(file_path))
+        if not docs:
+            processed_set.add(str(file_path))
+            _snapshot_execute(out_dir, processed_set, warnings, phase="ingesting")
+            continue
+        stats = ingest_documents(
+            client,
+            plan["collection_name"],
+            docs,
+            embedder,
+            text_field=plan["schema"]["text_field"],
+            id_field=plan["schema"]["primary_key"],
+            vector_field=plan["schema"]["vector_field"],
+            chunk_config=chunk_config,
+            extra_field_keys=extra_keys,
+        )
+        totals["documents"] += stats.documents
+        totals["chunks"] += stats.chunks
+        totals["batches"] += stats.batches
+        totals["retries"] += stats.retries
+        last_sample_query = str(docs[0].get(plan["schema"]["text_field"], "")) or last_sample_query
+        processed_set.add(str(file_path))
+        _snapshot_execute(out_dir, processed_set, warnings, phase="ingesting")
+
+    # Smoke query (single, using a row from the last-ingested file)
+    smoke_hits: list[dict[str, Any]] = []
+    if last_sample_query:
+        smoke_hits = [
+            h.to_dict()
+            for h in search_dense(
+                client,
+                plan["collection_name"],
+                last_sample_query,
+                embedder,
+                top_k=1,
+                vector_field=plan["schema"]["vector_field"],
+                output_fields=[plan["schema"]["text_field"]],
+            )
+        ]
+
+    sidecar_pid = _start_sidecar(out_dir, plan, ui_port) if start_ui else None
+    report: dict[str, Any] = {
+        "phase": "complete",
+        "collection_status": coll_status,
+        "index_status": idx_status,
+        "ingest_path": "client-multi-file",
+        "ingest": totals,
+        "input_files": file_paths,
+        "processed_files": sorted(processed_set),
+        "smoke_query": last_sample_query[:120],
+        "smoke_hits": smoke_hits,
+        "ui_port": ui_port if start_ui else None,
+        "sidecar_pid": sidecar_pid,
+    }
+    if warnings:
+        report["warnings"] = warnings
+    if preflight is not None:
+        report["preflight"] = {
+            "cluster_id": cluster_id,
+            "state": str(preflight.get("state") or preflight.get("status") or ""),
+        }
+    (out_dir / "execute.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return report
+
+
+def _snapshot_execute(
+    out_dir: Path, processed: set[str], warnings: list[str], *, phase: str
+) -> None:
+    """Write the in-progress execute.json snapshot for crash-resumable runs."""
+    snapshot: dict[str, Any] = {
+        "phase": phase,
+        "processed_files": sorted(processed),
+    }
+    if warnings:
+        snapshot["warnings"] = warnings
+    (out_dir / "execute.json").write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def run_execute(
     *,
     out_dir: Path,
@@ -815,9 +1011,28 @@ def run_execute(
         plan["embedding"]["model"],
         plan["embedding"]["dim"],
     )
-    docs = list(_iter_documents(plan, out_dir, sample, input_path))
     chunk_config = ChunkConfig(size=plan["chunking"]["size"], overlap=plan["chunking"]["overlap"])
     extra_keys = tuple(f["name"] for f in plan["schema"]["extra_fields"])
+
+    multi_files = _execute_input_files(input_path, out_dir)
+    if multi_files is not None:
+        return _run_text_execute_multi_file(
+            client=client,
+            plan=plan,
+            files=multi_files,
+            out_dir=out_dir,
+            embedder=embedder,
+            chunk_config=chunk_config,
+            extra_keys=extra_keys,
+            coll_status=coll_status,
+            idx_status=idx_status,
+            ui_port=ui_port,
+            start_ui=start_ui,
+            preflight=preflight,
+            cluster_id=cluster_id,
+        )
+
+    docs = list(_iter_documents(plan, out_dir, sample, input_path))
 
     threshold = int(plan.get("bulk_import_threshold") or 0)
     ingest_path = "client"
@@ -1049,7 +1264,16 @@ def register(app: typer.Typer) -> None:
     def execute(
         run_dir: str | None = typer.Option(None, "--run-dir"),
         sample: str | None = typer.Option(None, "--sample", "-s"),
-        input: Path | None = typer.Option(None, "--input", "-i"),  # noqa: B008
+        input: Path | None = typer.Option(  # noqa: B008
+            None,
+            "--input",
+            "-i",
+            help=(
+                "Path to ingest. A file, a directory (recursive, JSONL/NDJSON only), "
+                "or a quoted glob like 'docs/*.jsonl'. Directory/glob inputs stream "
+                "files in sorted order and resume from execute.json.processed_files[]."
+            ),
+        ),
         ui_port: int = typer.Option(8000, "--ui-port"),
         no_ui: bool = typer.Option(False, "--no-ui", help="Skip starting the sidecar"),
         prefetch_models: bool = typer.Option(

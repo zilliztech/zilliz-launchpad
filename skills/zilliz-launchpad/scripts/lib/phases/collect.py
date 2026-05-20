@@ -14,13 +14,19 @@ from PIL import UnidentifiedImageError
 
 from .. import samples
 from ..cli import fail as _cli_fail
-from ..errors import InvalidProfileError, LaunchpadError, MissingDependencyError
+from ..errors import (
+    InputSchemaConflictError,
+    InvalidProfileError,
+    LaunchpadError,
+    MissingDependencyError,
+)
 from ..image_io import (
     IMAGE_SUFFIXES,
     THUMBNAIL_DEFAULT_CAP_ROWS,
     list_images,
     read_image_metadata,
 )
+from ..inputs import has_glob_chars, resolve_inputs
 from ..run_dir import new_run_dir, resolve_run_dir
 
 SUPPORTED_SUFFIXES = {".jsonl", ".ndjson", ".csv", ".txt", ".md", ".pdf"}
@@ -433,6 +439,165 @@ def _read_pdf(path: Path) -> dict[str, Any]:
     return result
 
 
+def _analyze_one_file(
+    path: Path,
+    *,
+    split_markdown_headings: bool,
+) -> dict[str, Any]:
+    """Per-file analysis for the document branches (jsonl/csv/txt/md/pdf).
+
+    Returns the same dict shape the existing per-file branches produced before
+    multi-file support was added.
+    """
+    suffix = path.suffix.lower()
+    if suffix in (".jsonl", ".ndjson"):
+        records = _read_jsonl(path)
+        return _analyze_records(records)
+    if suffix == ".csv":
+        records = _read_csv(path)
+        result = _analyze_records(records)
+        result["data_shape"] = "csv"
+        return result
+    if suffix == ".txt":
+        text = path.read_text(encoding="utf-8")
+        return {
+            "data_shape": "text",
+            "fields": [
+                {
+                    "name": "text",
+                    "type": "string",
+                    "avg_length": len(text),
+                    "sample_value": text[:200],
+                }
+            ],
+            "suggested_primary_key": "id",
+            "suggested_text_field": "text",
+            "record_count_estimate": 1,
+        }
+    if suffix == ".md":
+        return _read_markdown(path, split_headings=split_markdown_headings)
+    if suffix == ".pdf":
+        return _read_pdf(path)
+    raise ValueError(
+        f"Unsupported input suffix: {suffix}. "
+        f"Use {sorted(SUPPORTED_SUFFIXES)} "
+        f"or pass a directory of images ({sorted(IMAGE_SUFFIXES)}), "
+        f"a directory of documents, or a glob like 'docs/*.pdf'"
+    )
+
+
+def _merge_field(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    field_name: str,
+    existing_files: list[str],
+    incoming_file: str,
+) -> dict[str, Any]:
+    """Merge two per-file field entries; raise InputSchemaConflictError on type clash."""
+    if existing["type"] != incoming["type"]:
+        raise InputSchemaConflictError(
+            field_name=field_name,
+            files_and_types=[
+                # `existing_files` may carry several already-merged sources, but
+                # the *type* is the same across all of them — report the first
+                # disagreeing file alongside the incoming one.
+                {"path": existing_files[0], "type": existing["type"]},
+                {"path": incoming_file, "type": incoming["type"]},
+            ],
+        )
+    merged = dict(existing)
+    # Average length: simple mean of the two reported averages when both present.
+    e_len = existing.get("avg_length")
+    i_len = incoming.get("avg_length")
+    if isinstance(e_len, int) and isinstance(i_len, int):
+        merged["avg_length"] = (e_len + i_len) // 2
+    elif isinstance(i_len, int):
+        merged["avg_length"] = i_len
+    # Sample value: keep the longer string sample if both are strings.
+    e_sv = existing.get("sample_value")
+    i_sv = incoming.get("sample_value")
+    if isinstance(e_sv, str) and isinstance(i_sv, str):
+        merged["sample_value"] = e_sv if len(e_sv) >= len(i_sv) else i_sv
+    elif e_sv is None and i_sv is not None:
+        merged["sample_value"] = i_sv
+    return merged
+
+
+def _merge_collect_results(
+    per_file: list[tuple[Path, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Merge per-file analyses into a single multi-file collect result.
+
+    Computes the union schema, raising `InputSchemaConflictError` on a
+    cross-file type disagreement for a shared field name.
+    """
+    merged_fields: dict[str, dict[str, Any]] = {}
+    field_seen_in: dict[str, list[str]] = {}
+    source_files: list[dict[str, Any]] = []
+    total_records = 0
+    shapes: set[str] = set()
+    warnings: list[str] = []
+
+    for path, result in per_file:
+        path_str = str(path)
+        shapes.add(str(result.get("data_shape") or "unknown"))
+        total_records += int(result.get("record_count_estimate") or 0)
+        source_files.append(
+            {
+                "path": path_str,
+                "data_shape": result.get("data_shape"),
+                "record_count_estimate": result.get("record_count_estimate"),
+            }
+        )
+        for warning in result.get("warnings") or []:
+            warnings.append(warning)
+        for field in result.get("fields") or []:
+            name = str(field["name"])
+            if name in merged_fields:
+                merged_fields[name] = _merge_field(
+                    merged_fields[name],
+                    field,
+                    field_name=name,
+                    existing_files=field_seen_in[name],
+                    incoming_file=path_str,
+                )
+                field_seen_in[name].append(path_str)
+            else:
+                merged_fields[name] = dict(field)
+                field_seen_in[name] = [path_str]
+
+    file_count = len(per_file)
+    for name in merged_fields:
+        if len(field_seen_in[name]) < file_count:
+            merged_fields[name]["nullable"] = True
+
+    fields = list(merged_fields.values())
+    pk_candidates = [
+        f["name"] for f in fields if str(f["name"]).lower() in ("id", "_id", "doc_id", "uid")
+    ]
+    pk = pk_candidates[0] if pk_candidates else (fields[0]["name"] if fields else "id")
+    text_candidates = sorted(
+        (f for f in fields if f["type"] == "string" and f.get("avg_length")),
+        key=lambda f: f.get("avg_length") or 0,
+        reverse=True,
+    )
+    text_field = text_candidates[0]["name"] if text_candidates else "text"
+
+    data_shape = next(iter(shapes)) if len(shapes) == 1 else "mixed"
+    out: dict[str, Any] = {
+        "data_shape": data_shape,
+        "fields": fields,
+        "suggested_primary_key": pk,
+        "suggested_text_field": text_field,
+        "record_count_estimate": total_records,
+        "source_files": source_files,
+    }
+    if warnings:
+        out["warnings"] = warnings
+    return out
+
+
 def run_collect(
     *,
     input_path: str | None,
@@ -449,68 +614,81 @@ def run_collect(
         result["source_sample"] = sample
     else:
         assert input_path, "Either --sample or --input is required"
-        path = Path(input_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Input not found: {path}")
-        if path.is_dir():
-            if _dir_is_video_collection(path):
+        # Image/video directories keep their bespoke single-shape semantics and
+        # do NOT route through resolve_inputs.
+        raw = input_path
+        literal_path = Path(raw)
+        if not has_glob_chars(raw) and literal_path.is_dir():
+            if _dir_is_video_collection(literal_path):
                 knobs = _read_configure_video_knobs(out_dir)
                 result = _read_video_dir(
-                    path,
+                    literal_path,
                     out_dir=out_dir,
                     interval_s=knobs["frame_interval_seconds"],
                     max_frames_per_video=knobs["max_frames_per_video"],
                     sampling_strategy=knobs["sampling_strategy"],
                     scene_threshold=knobs["scene_threshold"],
                 )
-            else:
+                result["source_path"] = str(literal_path)
+            elif _dir_is_image_collection(literal_path):
                 result = _read_image_dir(
-                    path,
+                    literal_path,
                     with_thumbnails=with_thumbnails,
                     thumbnail_cap_rows=thumbnail_cap_rows,
                 )
-            result["source_path"] = str(path)
-        else:
-            suffix = path.suffix.lower()
-            if suffix in (".jsonl", ".ndjson"):
-                records = _read_jsonl(path)
-                result = _analyze_records(records)
-            elif suffix == ".csv":
-                records = _read_csv(path)
-                result = _analyze_records(records)
-                result["data_shape"] = "csv"
-            elif suffix == ".txt":
-                text = path.read_text(encoding="utf-8")
-                result = {
-                    "data_shape": "text",
-                    "fields": [
-                        {
-                            "name": "text",
-                            "type": "string",
-                            "avg_length": len(text),
-                            "sample_value": text[:200],
-                        }
-                    ],
-                    "suggested_primary_key": "id",
-                    "suggested_text_field": "text",
-                    "record_count_estimate": 1,
-                }
-            elif suffix == ".md":
-                result = _read_markdown(path, split_headings=split_markdown_headings)
-            elif suffix == ".pdf":
-                result = _read_pdf(path)
+                result["source_path"] = str(literal_path)
             else:
-                raise ValueError(
-                    f"Unsupported input suffix: {suffix}. "
-                    f"Use {sorted(SUPPORTED_SUFFIXES)} "
-                    f"or pass a directory of images ({sorted(IMAGE_SUFFIXES)})"
+                # Document directory: walk + merge.
+                files = resolve_inputs(raw, supported_suffixes=SUPPORTED_SUFFIXES)
+                result = _run_multi_or_single(
+                    files,
+                    split_markdown_headings=split_markdown_headings,
                 )
-            result["source_path"] = str(path)
+        elif has_glob_chars(raw):
+            files = resolve_inputs(raw, supported_suffixes=SUPPORTED_SUFFIXES)
+            result = _run_multi_or_single(
+                files,
+                split_markdown_headings=split_markdown_headings,
+            )
+        else:
+            if not literal_path.exists():
+                raise FileNotFoundError(f"Input not found: {literal_path}")
+            # Single existing file — preserve existing single-file semantics
+            # (including the ValueError on unsupported suffix).
+            result = _analyze_one_file(
+                literal_path,
+                split_markdown_headings=split_markdown_headings,
+            )
+            result["source_path"] = str(literal_path)
 
     out = out_dir / "collect.json"
     with out.open("w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2, sort_keys=True)
     return result
+
+
+def _run_multi_or_single(
+    files: list[Path],
+    *,
+    split_markdown_headings: bool,
+) -> dict[str, Any]:
+    """Dispatch a resolved file list to single-file or merged multi-file analysis."""
+    if len(files) == 1:
+        result = _analyze_one_file(files[0], split_markdown_headings=split_markdown_headings)
+        result["source_path"] = str(files[0])
+        return result
+    per_file: list[tuple[Path, dict[str, Any]]] = [
+        (
+            f,
+            _analyze_one_file(f, split_markdown_headings=split_markdown_headings),
+        )
+        for f in files
+    ]
+    return _merge_collect_results(per_file)
+
+
+def _dir_is_image_collection(path: Path) -> bool:
+    return any(p.suffix.lower() in IMAGE_SUFFIXES for p in path.iterdir() if p.is_file())
 
 
 def register(app: typer.Typer) -> None:
@@ -519,7 +697,12 @@ def register(app: typer.Typer) -> None:
     @app.command()
     def collect(
         sample: str | None = typer.Option(None, "--sample", "-s", help="Bundled sample name"),
-        input: Path | None = typer.Option(None, "--input", "-i", help="Path to user data"),  # noqa: B008
+        input: Path | None = typer.Option(  # noqa: B008
+            None,
+            "--input",
+            "-i",
+            help="Path to user data: a file, directory (recursive), or glob like 'docs/*.pdf'",
+        ),
         run_dir: str | None = typer.Option(
             None, "--run-dir", help="Existing run dir; default = new"
         ),
