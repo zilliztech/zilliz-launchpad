@@ -51,6 +51,37 @@ class SchemaConflictError(LaunchpadError):
         )
 
 
+class InputSchemaConflictError(LaunchpadError):
+    """Two or more input files declare the same field name with different JSON types.
+
+    Distinct from `SchemaConflictError`, which covers live-collection vs `plan.json`
+    mismatches at execute time.
+    """
+
+    code = "input_schema_conflict"
+
+    def __init__(self, *, field_name: str, files_and_types: list[dict[str, str]]) -> None:
+        files_desc = ", ".join(f"{ft['path']}({ft['type']})" for ft in files_and_types)
+        super().__init__(
+            f"Field '{field_name}' has conflicting types across inputs: {files_desc}",
+            field=field_name,
+            files=files_and_types,
+        )
+
+
+class EmptyInputSetError(LaunchpadError):
+    """`--input` resolved to zero files."""
+
+    code = "empty_input"
+
+    def __init__(self, *, raw: str, reason: str) -> None:
+        super().__init__(
+            f"--input '{raw}' resolved to no files: {reason}",
+            raw=raw,
+            reason=reason,
+        )
+
+
 class SparseUnavailable(LaunchpadError):
     code = "sparse_unavailable"
 

@@ -6,7 +6,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-from lib.errors import InvalidProfileError
 from lib.phases.collect import run_collect
 from PIL import Image
 
@@ -33,14 +32,21 @@ def test_image_dir_produces_correct_collect_json(tmp_path: Path):
 
 
 def test_no_supported_files_errors_with_invalid_profile(tmp_path: Path):
+    # A directory containing only image-suffix-shaped *but* unsupported binary
+    # files routes into the image-dir branch and fails clearly.
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
-    (empty_dir / "notes.txt").write_text("not an image")
+    (empty_dir / "fake.jpg").write_text("not actually a JPEG")
+    (empty_dir / "fake.jpg").unlink()
+    # No supported image OR document files at all → EmptyInputSetError from
+    # the doc-dir branch (a directory with only a `.bin` file).
+    (empty_dir / "junk.bin").write_bytes(b"\x00")
 
-    with pytest.raises(InvalidProfileError) as exc:
+    from lib.errors import EmptyInputSetError
+
+    with pytest.raises(EmptyInputSetError) as exc:
         run_collect(input_path=str(empty_dir), sample=None, out_dir=tmp_path)
-    assert "no supported image files" in exc.value.message
-    assert ".jpg" in exc.value.message
+    assert exc.value.code == "empty_input"
 
 
 def test_undecodable_file_warns_and_omits_row(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

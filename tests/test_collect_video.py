@@ -10,7 +10,6 @@ import pytest
 
 pytest.importorskip("av")
 
-from lib.errors import InvalidProfileError  # noqa: E402
 from lib.phases.collect import run_collect  # noqa: E402
 
 FIXTURE_VIDEOS = Path(__file__).parent / "fixtures" / "videos"
@@ -54,15 +53,17 @@ def test_video_dir_produces_correct_collect_json(tmp_path: Path):
 
 
 def test_no_supported_videos_errors_with_invalid_profile(tmp_path: Path):
+    # A directory of only unsupported binary blobs routes to the doc-dir branch
+    # (no images, no videos, no documents) and surfaces EmptyInputSetError.
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
-    (empty_dir / "notes.txt").write_text("not a video")
+    (empty_dir / "junk.bin").write_bytes(b"\x00")
 
-    # A .txt-only dir is treated as "not a video collection" → falls through
-    # to the image branch, which also rejects with invalid_profile.
-    with pytest.raises(InvalidProfileError) as exc:
+    from lib.errors import EmptyInputSetError
+
+    with pytest.raises(EmptyInputSetError) as exc:
         run_collect(input_path=str(empty_dir), sample=None, out_dir=tmp_path)
-    assert "no supported" in exc.value.message
+    assert exc.value.code == "empty_input"
 
 
 def test_corrupt_video_skipped_with_warning(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

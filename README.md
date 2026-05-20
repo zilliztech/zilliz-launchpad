@@ -110,7 +110,11 @@ uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py collect --sample mov
 # or: --input path/to/your.jsonl
 # or: --input path/to/your.pdf      # one record per page (requires `.[documents]` extra)
 # or: --input path/to/notes.md      # whole file; add --split-markdown-headings for `## ` sections
+# or: --input ./docs/               # directory (recursive) — mixes .jsonl/.pdf/.md/.csv/.txt
+# or: --input 'docs/*.pdf'          # shell glob — quote it so the shell doesn't expand it first
 ```
+
+Directory or glob inputs produce a `source_files[]` array in `collect.json` (one entry per file) and a union schema across files. A field name appearing in only some files is marked `nullable: true`; the same field name with different JSON types in different files raises `input_schema_conflict` and refuses to write `collect.json`.
 
 Output (`collect.json`, abbreviated):
 
@@ -233,6 +237,12 @@ uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py execute --sample mov
 # → ingested 20 / 20
 # → smoke test: query "movie about parallel universes"
 # → ✓ Top-1: m001 'The Quantum Gardener' score=0.87
+
+# Ingest a whole folder of weekly exports — `execute` streams files in
+# lexicographic order. If the process is killed mid-batch, re-running with
+# the same --run-dir resumes from the next file via execute.json.processed_files[]:
+uv run python skills/zilliz-launchpad/scripts/zilliz_ops.py execute \
+    --run-dir runs/2026-05-20-collect --input ./weekly_exports/
 ```
 
 What it does:
